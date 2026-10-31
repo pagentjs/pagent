@@ -362,7 +362,7 @@ The rail has its own, for a look (never for pages): `--pagent-chrome` its fill; 
 `--pagent-rail-group` a group's name (`--pagent-muted`); `--pagent-rail-icon` a page
 icon's color, `--pagent-rail-icon-fill` the current page's closed shapes (default `none`); `--pagent-badge-attention` and
 `--pagent-badge-attention-text` the pill of a badge that wants the user (default the accent's soft tint and the accent),
-`--pagent-badge-new` the dot of one that is new (the accent). A white floating rail on a paper page: `--pagent-bg: #fbfaf7;
+`--pagent-badge-new` the dot of one that is new (the accent). Its type: `--pagent-rail-font-size` a row's title (14px), `--pagent-rail-note-size` the lines under it (12.5px), `--pagent-rail-group-size` a group's name (12px), `--pagent-rail-count-size` a badge's count (11px); `--pagent-crumbs-font-size` the trail of titles in the top bar (14px). An app whose pages are set smaller sets these to its own sizes, so the rail reads as one with them. A white floating rail on a paper page: `--pagent-bg: #fbfaf7;
 --pagent-chrome: #fff; --pagent-rail-inset: 10px; --pagent-rail-radius: 14px; --pagent-rail-border: transparent;
 --pagent-rail-shadow: 0 0 0 1px rgb(0 0 0 / 0.04), 0 1px 2px rgb(0 0 0 / 0.06)`.
 
