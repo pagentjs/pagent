@@ -76,6 +76,12 @@ export type Extracted = {
    */
   group?: string;
   /**
+   * `metadata.folded`: its rail row starts folded, the pages under it hidden until the reader opens it (an app with many
+   * pages under many rows lists only the one being read). The reader's own folding wins; the page on screen is never
+   * folded away.
+   */
+  folded?: boolean;
+  /**
    * `metadata.fill`: the page takes the whole window below the shell's top bar, edge to edge (no padding around it, its
    * height the window's): an app with its own frame (a sidebar, a chat that scrolls inside). On a layout, for the pages
    * under it; the nearest one that says wins.
@@ -480,6 +486,9 @@ export function analyze(
         const group = (meta as { group?: unknown } | null)?.group;
         if (typeof group === "string" && group.trim() && group.trim().length <= GROUP_MAX) result.group = group.trim();
         else if (group !== undefined) fail(d, `metadata.group is a short name (at most ${GROUP_MAX} characters, "Opuscar"): its siblings with the same one are listed together under it in the rail`);
+        const folded = (meta as { folded?: unknown } | null)?.folded;
+        if (typeof folded === "boolean") result.folded = folded;
+        else if (folded !== undefined) fail(d, `metadata.folded is true (its rail row starts folded, the pages under it hidden until the reader opens it) or false`);
         const icon = (meta as { icon?: unknown } | null)?.icon;
         const bad = icon === undefined ? null : iconError(icon);
         if (bad) fail(d, bad);
@@ -653,7 +662,7 @@ const DECLARED: Record<string, (keyof Extracted)[]> = {
   triggers: ["triggers"],
   tools: ["tools"],
   config: ["config"],
-  metadata: ["title", "order", "lang", "fill", "icon", "group"],
+  metadata: ["title", "order", "lang", "fill", "icon", "group", "folded"],
 };
 
 /**
@@ -713,6 +722,7 @@ export function mergeManifest(parts: Extracted[]): Extracted {
     m.fill = p.fill ?? m.fill;
     m.icon = p.icon ?? m.icon;
     m.group = p.group ?? m.group;
+    m.folded = p.folded ?? m.folded;
     m.errors.push(...p.errors);
   }
   // A remote agent's door here is its node's message route, so it is the node's one agent.

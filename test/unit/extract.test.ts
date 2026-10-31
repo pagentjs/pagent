@@ -114,6 +114,14 @@ test("metadata.group: a short name its siblings share; merged and inherited as t
   assert.equal(inherit([analyze(`export default function P() { return null; }`), layout]).part.group, "Tools");
 });
 
+test("metadata.folded: true or false, merged as the title is", () => {
+  assert.equal(analyze(`export const metadata = { title: "Opuscar", folded: true };`).folded, true);
+  assert.match(analyze(`export const metadata = { folded: "yes" };`).errors.join(), /metadata.folded is true/);
+  const layout = analyze(`export const metadata = { folded: true };`);
+  assert.equal(mergeManifest([layout, analyze(`export const metadata = { title: "x" };`)]).folded, true);
+  assert.equal(mergeManifest([layout, analyze(`export const metadata = { folded: false };`)]).folded, false);
+});
+
 test("string actions are gone: an action is a function of a \"use server\" file", () => {
   assert.match(analyze(`export const actions = { status: "docker ps" };`).errors.join(), /export const actions is gone: .*"use server"/);
 });

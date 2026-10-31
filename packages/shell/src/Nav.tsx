@@ -21,7 +21,7 @@ import { go } from "./nav.ts";
  * code). An instance of a dynamic page: instanceOf (its code's path), and createdBy, who made it (`tell --new`:
  * "/demo/fix-login#main"), which the rail nests it under.
  */
-export type Page = { path: string; url: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; icon?: string; group?: string; badge?: Badge; instanceOf?: string; createdBy?: string };
+export type Page = { path: string; url: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; icon?: string; group?: string; folded?: boolean; badge?: Badge; instanceOf?: string; createdBy?: string };
 /** A count after a page's title (none: a dot alone), and how it reads: wanting the user, quiet, or new. */
 export type Badge = { count?: number; tone: "attention" | "quiet" | "new" };
 /** Where a new page can be made: an instance of the dynamic page `pattern` (/[ws]/[id]), by a name under `under` (/demo). */
@@ -224,13 +224,14 @@ const readFolded = (): Record<string, boolean> => {
 
 /**
  * What the reader folded in the rail (groups and rows with rows under them), by their keys, remembered in this browser;
- * and a fold or unfold. Unfolded by default.
+ * and a fold or unfold. Unfolded by default, or folded for a row whose page says metadata.folded: what is stored is
+ * only where the reader differs from that (true: folded, false: opened).
  */
-function useFolded(): [Record<string, boolean>, (key: string, folded: boolean) => void] {
+function useFolded(): [Record<string, boolean>, (key: string, folded: boolean, byDefault: boolean) => void] {
   const [folded, setFolded] = useState(readFolded);
-  const set = (key: string, f: boolean) => {
+  const set = (key: string, f: boolean, byDefault: boolean) => {
     const next = { ...readFolded() };
-    if (f) next[key] = true;
+    if (f !== byDefault) next[key] = f;
     else delete next[key];
     try {
       localStorage.setItem(FOLDED_KEY, JSON.stringify(next));
@@ -442,9 +443,10 @@ export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses:
     const at = rows.find((r) => r.url === current) ?? rows.filter((r) => r.kind === "page" && current.startsWith(r.url + "/")).sort((a, b) => b.url.length - a.url.length)[0];
     return new Set(at?.under ?? []);
   }, [rows, current]);
-  const folded = (key: string) => !!stored[key] && (!here.has(key) || mine.has(key));
+  const byDefault = useMemo(() => new Set(rows.flatMap((r) => (r.kind === "page" && r.fold && r.page?.folded ? [r.fold] : []))), [rows]);
+  const folded = (key: string) => (stored[key] ?? byDefault.has(key)) && (!here.has(key) || mine.has(key));
   const fold = (key: string) => {
-    setStored(key, !folded(key));
+    setStored(key, !folded(key), byDefault.has(key));
     setMine((m) => new Set(m).add(key));
   };
   // What a fold hides that wants the user (Folded).

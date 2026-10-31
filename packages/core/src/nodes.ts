@@ -45,12 +45,12 @@ export function clientInfo(info: NodeInfo): ClientNodeInfo {
  * people read it and links write it (/studio/demo/修登录 for /studio/demo/+4fee+767b+5f55), what the address bar says.
  * titled: false when the title is only the folder's name. lang: the language it says it is in (metadata.lang); the
  * home page's is the app's. icon: what its rail row shows before the title (metadata.icon, an instance its page's);
- * group: the group of its siblings it is listed in (metadata.group).
+ * group: the group of its siblings it is listed in (metadata.group); folded: its row starts folded (metadata.folded).
  * badge: what the row says after it, set by the app's server code (badges.ts). An instance of a dynamic page:
  * instanceOf, its code's path (/studio/[ws]/[id]), and createdBy, who made it with `tell --new` (made.ts), which the
  * rail nests it under.
  */
-export type PageEntry = { path: string; url: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; icon?: string; group?: string; badge?: Badge; instanceOf?: string; createdBy?: string };
+export type PageEntry = { path: string; url: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; icon?: string; group?: string; folded?: boolean; badge?: Badge; instanceOf?: string; createdBy?: string };
 
 /** A page without metadata.title: its folder's name ("meal-plan" → "Meal plan"); the root is "Home". */
 export function fallbackTitle(path: string): string {
@@ -214,10 +214,11 @@ export class Nodes {
         const lang = decl?.manifest.lang;
         const icon = decl?.manifest.icon;
         const group = decl?.manifest.group;
+        const folded = decl?.manifest.folded;
         const badge = badgeOf(this.root, path);
         const by = decl?.code ? madeOf(this.root, path).by : undefined;
         const of = decl?.code ? { instanceOf: decl.code, ...(by ? { createdBy: by } : {}) } : {};
-        return { path, url: shownPath(this.root, path), title, titled: !!own, agents: decl?.manifest.agents.map((a) => a.name) ?? [], ...(order !== undefined ? { order } : {}), ...(lang ? { lang } : {}), ...(icon ? { icon } : {}), ...(group ? { group } : {}), ...(badge ? { badge } : {}), ...of };
+        return { path, url: shownPath(this.root, path), title, titled: !!own, agents: decl?.manifest.agents.map((a) => a.name) ?? [], ...(order !== undefined ? { order } : {}), ...(lang ? { lang } : {}), ...(icon ? { icon } : {}), ...(group ? { group } : {}), ...(folded ? { folded } : {}), ...(badge ? { badge } : {}), ...of };
       }),
     );
   }
