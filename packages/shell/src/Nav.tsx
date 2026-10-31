@@ -16,15 +16,22 @@ import { go } from "./nav.ts";
 /**
  * path: the page's address as the engine has it (agent status, tell); url: as people read it and the address bar says
  * it (/demo/修登录 for /demo/+4fee+767b+5f55), what the rail matches and links to. lang: the language the page says it
- * is in (metadata.lang); the home page's is the app's. An instance of a dynamic page: instanceOf (its code's path), and
- * createdBy, who made it (`tell --new`: "/demo/fix-login#main"), which the rail nests it under.
+ * is in (metadata.lang); the home page's is the app's. icon: the inside of a 24×24 SVG its row shows before the title
+ * (metadata.icon, checked by the engine: shapes only); group: the group of its siblings it is listed in (metadata.group); badge: what the row says after it (badge() from the app's server
+ * code). An instance of a dynamic page: instanceOf (its code's path), and createdBy, who made it (`tell --new`:
+ * "/demo/fix-login#main"), which the rail nests it under.
  */
-export type Page = { path: string; url: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; instanceOf?: string; createdBy?: string };
+export type Page = { path: string; url: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; icon?: string; group?: string; badge?: Badge; instanceOf?: string; createdBy?: string };
+/** A count after a page's title (none: a dot alone), and how it reads: wanting the user, quiet, or new. */
+export type Badge = { count?: number; tone: "attention" | "quiet" | "new" };
 /** Where a new page can be made: an instance of the dynamic page `pattern` (/[ws]/[id]), by a name under `under` (/demo). */
 export type Dynamic = { pattern: string; under: string; title?: string };
 export type Pages = { pages: Page[]; dynamic: Dynamic[] };
 
-/** The app's pages (title, agents) and where new ones can be made, reloaded when code changes (a page added, a title changed). */
+/**
+ * The app's pages (title, agents) and where new ones can be made, reloaded when code changes (a page added, a title
+ * changed). A badge set meanwhile comes with its event: only that page changes.
+ */
 export function usePages(): Pages | null {
   const [pages, setPages] = useState<Pages | null>(null);
   useEffect(() => {
@@ -32,6 +39,10 @@ export function usePages(): Pages | null {
     const load = () => api<Pages>("/_pagent/pages").then(setPages, () => {});
     load();
     const off = onHostEvent((e) => {
+      if (e.type === "badge") {
+        const { path, badge } = e;
+        return setPages((n) => n && { ...n, pages: n.pages.map((p) => (p.path === path ? { ...p, badge: badge ?? undefined } : p)) });
+      }
       if (e.type !== "code" && e.type !== "resync") return;
       clearTimeout(timer);
       timer = setTimeout(load, 300);
@@ -201,8 +212,43 @@ function useSeen(current: string, pages: Page[], statuses: Map<string, Glance>):
   return seen;
 }
 
-/** A row of the rail: a page, or a folder on the way to pages (a label); makes: the new pages that can go under it. */
-type Row = { url: string; depth: number; page?: Page; makes: Dynamic[] };
+const FOLDED_KEY = "pagent.folded";
+const readFolded = (): Record<string, boolean> => {
+  try {
+    const v = JSON.parse(localStorage.getItem(FOLDED_KEY) ?? "{}");
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {}; // a storage that does not read: everything unfolded, as by default
+  }
+};
+
+/**
+ * What the reader folded in the rail (groups and rows with rows under them), by their keys, remembered in this browser;
+ * and a fold or unfold. Unfolded by default.
+ */
+function useFolded(): [Record<string, boolean>, (key: string, folded: boolean) => void] {
+  const [folded, setFolded] = useState(readFolded);
+  const set = (key: string, f: boolean) => {
+    const next = { ...readFolded() };
+    if (f) next[key] = true;
+    else delete next[key];
+    try {
+      localStorage.setItem(FOLDED_KEY, JSON.stringify(next));
+    } catch {}
+    setFolded(next);
+  };
+  return [folded, set];
+}
+
+/**
+ * A row of the rail: a page, or a folder on the way to pages (a label), and makes: the new pages that can go under it;
+ * or the name of a group of siblings (metadata.group), which is no page. under: the folds it is listed in (its groups'
+ * and its ancestors' keys), so it is hidden while one of them is folded; fold: its own key, when rows are listed in it
+ * (a row's: its url; a group's: its parent's url, "#", its name).
+ */
+type Row =
+  | { kind: "page"; url: string; depth: number; page?: Page; makes: Dynamic[]; under: string[]; fold?: string }
+  | { kind: "group"; url: string; depth: number; name: string; size: number; under: string[]; fold: string };
 
 /** The maker an instance is shown under: the instance whose agent (or trigger) made it, when that one is listed. */
 function makerOf(p: Page, byPath: Map<string, Page>): Page | null {
@@ -219,6 +265,8 @@ function makerOf(p: Page, byPath: Map<string, Page>): Page | null {
  * title. Folders on the way to a page that are not pages themselves (/cards for /cards/todo) show as labels, and so does
  * a folder where a new page can be made (`dynamic`). An instance some other instance's agent made (`tell --new`) is
  * under that one instead. Each page is a row of its own, with its own state: the rail is the app's one list of them.
+ * Siblings in a group (metadata.group) are listed together under its name, after the ones in none: the groups by the
+ * lowest order in each, then by name; in each, by order, then by title.
  */
 function railRows(pages: Page[], dynamic: Dynamic[]): { home: Dynamic[]; rows: Row[] } {
   type T = { seg: string; url: string; page?: Page; makes: Dynamic[]; kids: Map<string, T>; up?: T };
@@ -248,13 +296,26 @@ function railRows(pages: Page[], dynamic: Dynamic[]): { home: Dynamic[]; rows: R
   // A folder with nothing left in it (its one page moved under its maker) is no row.
   const shown = (t: T): boolean => !!t.page || t.makes.length > 0 || [...t.kids.values()].some(shown);
   const rows: Row[] = [];
-  const walk = (t: T, depth: number) => {
-    for (const k of [...t.kids.values()].filter(shown).sort(byOrder)) {
-      rows.push({ url: k.url, depth, page: k.page, makes: k.makes });
-      walk(k, depth + 1);
+  const walk = (t: T, depth: number, under: string[]) => {
+    const kids = [...t.kids.values()].filter(shown);
+    const groups = new Map<string, T[]>();
+    for (const k of kids) if (k.page?.group) groups.set(k.page.group, [...(groups.get(k.page.group) ?? []), k]);
+    const lowest = (ks: T[]) => Math.min(...ks.map((k) => k.page?.order ?? Infinity));
+    const put = (k: T, under: string[]) => {
+      const row: Row = { kind: "page", url: k.url, depth, page: k.page, makes: k.makes, under };
+      const before = rows.push(row);
+      walk(k, depth + 1, [...under, k.url]);
+      if (rows.length > before) row.fold = k.url;
+    };
+    for (const k of kids.filter((k) => !k.page?.group).sort(byOrder)) put(k, under);
+    const named = [...groups].sort(([a, as], [b, bs]) => lowest(as) - lowest(bs) || a.toLowerCase().localeCompare(b.toLowerCase()));
+    for (const [name, ks] of named) {
+      const fold = `${t.url}#${name}`;
+      rows.push({ kind: "group", url: fold, depth, name, size: ks.length, under, fold });
+      for (const k of ks.sort(byOrder)) put(k, [...under, fold]);
     }
   };
-  walk(top, 0);
+  walk(top, 0, []);
   return { home: top.makes, rows };
 }
 
@@ -278,7 +339,38 @@ const Icon = ({ d, width = 1.5 }: { d: string; width?: number }) => (
     <path d={d} />
   </svg>
 );
+/**
+ * A page's own icon (metadata.icon): its shapes in lines of the row's color, 16px. The engine let through shapes and
+ * their geometry only (extract: iconError), so the markup goes in as it is; class "o" (an open line, never filled) and
+ * "d" (a solid dot) keep their meaning for the current page's fill (styles.css).
+ */
+const PageIcon = ({ icon }: { icon: string }) => <svg className="pagent-railicon" viewBox="0 0 24 24" aria-hidden="true" dangerouslySetInnerHTML={{ __html: icon }} />;
+
+/** What a page's row says after its title (badge() from the app's server code): a count, a pill that wants the user, a dot. */
+const PageBadge = ({ badge }: { badge: Badge }) => (
+  <span className="pagent-railbadge" data-tone={badge.tone} {...(badge.count === undefined ? { role: "img", title: t("rail.badgeNew"), "aria-label": t("rail.badgeNew") } : {})}>
+    {badge.count}
+  </span>
+);
+
+/**
+ * What a fold hides that wants the user: the attention badges' counts, summed, and whether an agent waits; on the fold's
+ * row, so folding never hides them.
+ */
+const Folded = ({ attention, waiting }: { attention: number; waiting: boolean }) =>
+  attention || waiting ? (
+    <span className="pagent-railfolded">
+      {waiting && <span className="pagent-navdot" data-state="waiting" role="img" title={t("rail.foldedWaiting")} aria-label={t("rail.foldedWaiting")} />}
+      {attention > 0 && (
+        <span className="pagent-railbadge" data-tone="attention" title={t("rail.foldedAttention", { n: attention })}>
+          {attention}
+        </span>
+      )}
+    </span>
+  ) : null;
+
 const PLUS = "M8 3.5v9M3.5 8h9";
+const CHEVRON = "M6 4l4 4-4 4";
 const MORE = "M3.5 8h.01M8 8h.01M12.5 8h.01";
 
 /** What is open in the rail, one thing at a time: a row's menu, or a name being typed (a new page under a row, a page's new name). */
@@ -327,8 +419,10 @@ function NameInput({ initial, label, indent, onDone, onCancel }: { initial: stri
 
 /**
  * The pages of the app, as a tree of titles. A page with agents shows, without opening it: its state (a dot), what it
- * is doing or the question it waits on, the last thing it said, and when it last talked. `current`: the page on screen,
- * as people read its address.
+ * is doing or the question it waits on, the last thing it said, and when it last talked. Any page may show its icon
+ * before its title and its badge after it (a count, a dot: what the app says is there). Siblings may be listed in
+ * groups under their names; the reader folds a group, or a row with rows under it. `current`: the page on screen, as
+ * people read its address.
  */
 export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses: Map<string, Glance>; current: string; onPick?: () => void }) {
   const { pages, dynamic } = nav;
@@ -339,6 +433,31 @@ export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses:
   const [open, setOpen] = useState<Open | null>(null);
   const [failed, setFailed] = useState<{ url: string; text: string } | null>(null);
   const menu = useRef<HTMLDivElement>(null);
+  // Folds: the reader's, but the group and the rows the page on screen is in stay open (what is stored is left as it
+  // is), unless the reader folds one of them while on this page.
+  const [stored, setStored] = useFolded();
+  const [mine, setMine] = useState<Set<string>>(() => new Set());
+  useEffect(() => setMine(new Set()), [current]);
+  const here = useMemo(() => {
+    const at = rows.find((r) => r.url === current) ?? rows.filter((r) => r.kind === "page" && current.startsWith(r.url + "/")).sort((a, b) => b.url.length - a.url.length)[0];
+    return new Set(at?.under ?? []);
+  }, [rows, current]);
+  const folded = (key: string) => !!stored[key] && (!here.has(key) || mine.has(key));
+  const fold = (key: string) => {
+    setStored(key, !folded(key));
+    setMine((m) => new Set(m).add(key));
+  };
+  // What a fold hides that wants the user (Folded).
+  const hidden = (key: string) => {
+    let attention = 0;
+    let waiting = false;
+    for (const r of rows) {
+      if (r.kind !== "page" || !r.page || !r.under.includes(key)) continue;
+      if (r.page.badge?.tone === "attention") attention += r.page.badge.count ?? 0;
+      waiting ||= pageGlance(r.page, statuses)?.state === "waiting";
+    }
+    return { attention, waiting };
+  };
   // A menu closes on a click elsewhere, or Escape.
   useEffect(() => {
     if (open?.kind !== "menu") return;
@@ -395,16 +514,19 @@ export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses:
     if (onScreen(p.url)) go(pages.filter((q) => p.url.startsWith(q.url === "/" ? "/" : q.url + "/")).sort((a, b) => b.url.length - a.url.length)[0]?.url ?? "/");
   };
 
-  const item = (p: Page, depth: number, className = "") => {
+  const item = (p: Page, depth: number, className = "", fold?: string) => {
     const g = pageGlance(p, statuses);
     const unread = unreadOf(p, g);
     const now1 = g?.state === "waiting" ? g.question ?? t("status.waiting") : g?.state === "working" ? g.doing ?? t("status.working") : g?.state === "offline" ? t("status.offline") : null;
     const when = ago(g?.lastAt ?? g?.said?.at, now);
     return (
-      <a href={p.url} className={`pagent-railitem ${className}`} aria-current={p.url === current ? "page" : undefined} data-unread={unread || undefined} style={{ paddingLeft: indent(depth) }} onClick={onPick}>
+      <a href={p.url} className={`pagent-railitem ${className}`} aria-current={p.url === current ? "page" : undefined} data-unread={unread || undefined} data-icon={p.icon ? true : undefined} style={{ paddingLeft: indent(depth) }} onClick={onPick}>
         <span className="pagent-railrow">
           <Dot glance={g} unread={unread} />
+          {p.icon && <PageIcon icon={p.icon} />}
           <span className="pagent-railtitle">{p.title}</span>
+          {p.badge && <PageBadge badge={p.badge} />}
+          {fold && folded(fold) && <Folded {...hidden(fold)} />}
           {when && g?.state !== "working" && <time className="pagent-railtime" dateTime={g?.lastAt ?? g?.said?.at ?? undefined} title={new Date(g?.lastAt ?? g?.said?.at ?? 0).toLocaleString()}>{when}</time>}
         </span>
         {now1 && <span className="pagent-railnote" data-state={g!.state} title={(g!.state === "working" || g!.state === "offline") && g!.detail && g!.detail !== now1 ? `${now1}\n${g!.detail}` : now1}>{now1}</span>}
@@ -420,6 +542,7 @@ export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses:
   // A row, with what can be done there: "+" (a new page under it; a menu of them when several pages can go there)
   // and, on an instance, "⋯" (rename, delete). Then the name of a new page being typed, and what went wrong.
   const entry = (r: Row, className = "") => {
+    if (r.kind === "group") return group(r);
     const p = r.page;
     const label = (d: Dynamic) => (d.title ? t("rail.new", { title: d.title }) : t("rail.newPage"));
     const menuOf = open?.kind === "menu" && open.url === r.url ? open.of : null;
@@ -440,14 +563,32 @@ export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses:
     const body = naming && p ? (
       <NameInput initial={p.url.slice(p.url.lastIndexOf("/") + 1)} label={t("rail.newName", { title: p.title })} indent={indent(r.depth)} onDone={(name) => rename(p, name)} onCancel={() => setOpen(null)} />
     ) : p ? (
-      item(p, r.depth, className)
+      item(p, r.depth, className, r.fold)
     ) : (
-      <div className="pagent-raillabel" style={{ paddingLeft: 23 + r.depth * 14 }}>{r.url.slice(r.url.lastIndexOf("/") + 1).replace(/[-_]+/g, " ")}</div>
+      <div className="pagent-raillabel" style={{ paddingLeft: 23 + r.depth * 14 }}>
+        {r.url.slice(r.url.lastIndexOf("/") + 1).replace(/[-_]+/g, " ")}
+        {r.fold && folded(r.fold) && <Folded {...hidden(r.fold)} />}
+      </div>
     );
+    const name = p?.title ?? r.url.slice(r.url.lastIndexOf("/") + 1);
+    const isFolded = !!r.fold && folded(r.fold);
     return (
       <div key={r.url} className="pagent-railentry">
-        <div className="pagent-railhead" data-acts={acts || undefined} data-open={menuOf ? true : undefined} style={{ "--pagent-acts": `${acts * 24}px` } as CSSProperties}>
+        <div
+          className="pagent-railhead"
+          data-acts={acts || undefined}
+          data-open={menuOf ? true : undefined}
+          data-fold={(r.fold && !naming) || undefined}
+          data-folded={(isFolded && !naming) || undefined}
+          style={{ "--pagent-acts": `${acts * 24}px` } as CSSProperties}
+        >
           {body}
+          {r.fold && !naming && (
+            // Folds the rows under it, and goes nowhere: the title is the link.
+            <button className="pagent-icon pagent-railfold" aria-expanded={!isFolded} aria-label={t(isFolded ? "rail.unfold" : "rail.fold", { title: name })} title={t(isFolded ? "rail.unfold" : "rail.fold", { title: name })} onClick={() => fold(r.fold!)}>
+              <Icon d={CHEVRON} width={1.6} />
+            </button>
+          )}
           {acts > 0 && (
             <span className="pagent-railacts">
               {plus && (
@@ -491,10 +632,25 @@ export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses:
     );
   };
 
+  // A group's name: no page, a button that folds it (its count and what it hides that wants the user, while folded).
+  const group = (r: Row & { kind: "group" }) => {
+    const isFolded = folded(r.fold);
+    return (
+      <div key={r.url} className="pagent-railentry">
+        <button className="pagent-railgroup" aria-expanded={!isFolded} data-folded={isFolded || undefined} style={{ paddingLeft: indent(r.depth) }} onClick={() => fold(r.fold)}>
+          <Icon d={CHEVRON} width={1.6} />
+          <span className="pagent-railgroupname">{r.name}</span>
+          {isFolded && <Folded {...hidden(r.fold)} />}
+          {isFolded && <span className="pagent-railcount" title={t("rail.groupSize", { n: r.size })}>{r.size}</span>}
+        </button>
+      </div>
+    );
+  };
+
   return (
     <nav className="pagent-rail" aria-label={t("app.pages")} data-pagent-chrome>
-      {root && entry({ url: "/", depth: 0, page: root, makes: home }, "pagent-railhome")}
-      <div className="pagent-raillist">{rows.map((r) => entry(r))}</div>
+      {root && entry({ kind: "page", url: "/", depth: 0, page: root, makes: home, under: [] }, "pagent-railhome")}
+      <div className="pagent-raillist">{rows.filter((r) => !r.under.some(folded)).map((r) => entry(r))}</div>
     </nav>
   );
 }

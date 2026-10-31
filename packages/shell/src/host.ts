@@ -13,7 +13,8 @@ export type HostEvent =
   | { type: "data"; path: string; file: string }
   | { type: "agent"; node: string; agent: string; event: AgentEvent }
   | { type: "screen"; id: string; clientId: string; node: string; job: { action: string; ref?: string; label?: string; value?: string; name?: string; input?: unknown } }
-  | { type: "trigger"; node: string; name: string; why: string };
+  | { type: "trigger"; node: string; name: string; why: string }
+  | { type: "badge"; path: string; badge: { count?: number; tone: "attention" | "quiet" | "new" } | null };
 
 const listeners = new Set<(e: HostEvent) => void>();
 let source: EventSource | null = null;

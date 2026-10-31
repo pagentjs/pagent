@@ -121,7 +121,10 @@ export default function S({ params }) {
     const titles = () => p.locator(".pagent-raillist .pagent-railtitle").allTextContents();
     await until(async () => (await titles()).join() === "demo,a,b,c", "each session a row, under its workspace");
     assert.equal(await p.locator(".pagent-railitem[aria-current=page]").getAttribute("href"), "/s/demo/c");
-    assert.equal(await p.locator('.pagent-railitem[href^="/s/demo/"] .pagent-navdot[data-state=idle]').count(), 3); // each its own state
+    // Each its own state, as it comes (each row's status is a look of its own, after the row is there); a's reply to the
+    // test before may land after this page first looked (a slow machine), and then it is unread.
+    const own = '.pagent-railitem[href^="/s/demo/"] .pagent-navdot:is([data-state=idle], [data-state=unread])';
+    await until(async () => (await p.locator(own).count()) === 3, "each session's own state");
     // a's agent starts a helper (`tell --new`): it is under a, not beside it.
     await app.post("/_pagent/ask", { node: "/s/demo/a", agent: "main", message: '!sh pagent tell --new /s/demo/helper "!say helped" --wait' });
     await until(async () => (await titles()).join() === "demo,a,helper,b,c", "the helper under a");

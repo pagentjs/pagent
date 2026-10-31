@@ -2,6 +2,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { realpathSync, watch } from "node:fs";
 import { dirname, join, sep } from "node:path";
+import type { Badge } from "./badges.ts";
 import { CODE } from "./tree.ts";
 
 /**
@@ -16,7 +17,8 @@ export type HostEvent =
   | { type: "data"; path: string; file: string }
   | { type: "agent"; node: string; agent: string; event: Record<string, unknown> }
   | { type: "screen"; id: string; clientId: string; node: string; job: Record<string, unknown> }
-  | { type: "trigger"; node: string; name: string; why: string };
+  | { type: "trigger"; node: string; name: string; why: string }
+  | { type: "badge"; path: string; badge: Badge | null }; // a page's badge changed (badges.ts): its rail row says so
 
 /**
  * The engine's own words in what it tells the pages (what an agent is doing, a permission it asks for), as words of the

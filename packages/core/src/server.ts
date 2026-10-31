@@ -32,6 +32,7 @@ import { clientInfo, Nodes } from "./nodes.ts";
 import { canonical, codeOf, hasCode, instancePathError, instancesOf, isNode, nodeDir, normPath, notMade, resolveRoute, settleRecord, type NodeFile } from "./tree.ts";
 import { madeOf, migrateRecords, shownPath } from "./made.ts";
 import { moveNode, removeInstance } from "./moves.ts";
+import { setBadge } from "./badges.ts";
 import { movedText } from "./commands/nodes.ts";
 import { COOKIE, isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
 import { createKey, presentedKey, reaches, resolveKey, revokeKey, type KeyHolder } from "./keys.ts";
@@ -275,8 +276,8 @@ export function startServer(opts: ServerOptions) {
           return json(res, 200, { chain, params: codeOf(root, page)?.params ?? {}, fill });
         }
 
-        // The app's pages with their titles and agents, and where a new page can be made (a dynamic page's instance):
-        // the shell's navigation.
+        // The app's pages with their titles, icons, badges and agents, and where a new page can be made (a dynamic page's
+        // instance): the shell's navigation.
         case "GET /_pagent/pages":
           return json(res, 200, { pages: await nodes.pages(), dynamic: dynamicPages(root) });
 
@@ -479,6 +480,17 @@ export function startServer(opts: ServerOptions) {
             if (url.pathname === "/_pagent/remove") return json(res, 200, { removed: await removeInstance(ctx, String(body.path ?? "")) });
             const moved = await moveNode(ctx, String(body.from ?? ""), String(body.to ?? ""));
             return json(res, 200, { ...moved, text: movedText(moved) });
+          } catch (e) {
+            return json(res, 422, { error: (e as Error).message });
+          }
+        }
+
+        // A page's badge, from server code's badge() ("pagent/server"): set (a count, a tone) or cleared (badges.ts). 422
+        // with why for a path that is no page, a count or tone that is none.
+        case "POST /_pagent/badge": {
+          const body = (await readBody(req)) as { path?: string; count?: unknown; tone?: unknown };
+          try {
+            return json(res, 200, setBadge(root, String(body.path ?? ""), body.count ?? null, body.tone ?? "quiet"));
           } catch (e) {
             return json(res, 422, { error: (e as Error).message });
           }

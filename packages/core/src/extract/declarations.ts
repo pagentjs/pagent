@@ -66,6 +66,16 @@ export type Extracted = {
   /** The language it is written in (`metadata.lang`, "zh-CN"): the home page's is the app's, and the engine's words follow it. */
   lang?: string;
   /**
+   * `metadata.icon`: what the rail shows before its title, the inside of a 24×24 SVG (`'<rect x="3" y="5" width="18"
+   * height="14" rx="3"/>'`), drawn in lines of the text's color. Shapes and their geometry only (iconError).
+   */
+  icon?: string;
+  /**
+   * `metadata.group`: the group it is in among its siblings in the rail ("Opuscar"): pages of one group are listed
+   * together under its name, which is no page (one group per page, no groups in groups).
+   */
+  group?: string;
+  /**
    * `metadata.fill`: the page takes the whole window below the shell's top bar, edge to edge (no padding around it, its
    * height the window's): an app with its own frame (a sidebar, a chat that scrolls inside). On a layout, for the pages
    * under it; the nearest one that says wins.
@@ -421,7 +431,7 @@ export function analyze(
   //   export const tools   = { select_day: { description: "…", input: { day: "string" } } }   (useTool implements it)
   //   export const triggers = { check: { cron: "*/10 * * * *", run: "status" } }   (also every: "10s", watch: "file" or "~/node/file", app: true)
   //   export const config  = { shared: true, app: "Calculator", quit: "after", skills: [ … ], mcps: { … } }   (skills / mcps: agents/runner.ts; quit: quit.ts)
-  //   export const metadata = { title: "Health", lang: "zh-CN" }   (what navigation calls the page, the language it is in; it stays in the client bundle)
+  //   export const metadata = { title: "Health", lang: "zh-CN", icon: '<path d="…"/>', group: "Opuscar" }   (what navigation calls the page, shows before its title and lists it under, the language it is in; it stays in the client bundle)
   for (const stmt of ast.program.body as Node[]) {
     // import Calculator, { useCalculator } from "~/calculator": the component, and hooks that run as that node.
     if (stmt.type === "ImportDeclaration" && INSTALL_SOURCE.test(stmt.source.value)) fail(stmt, installSourceError(stmt.source.value));
@@ -467,6 +477,13 @@ export function analyze(
         const fill = (meta as { fill?: unknown } | null)?.fill;
         if (typeof fill === "boolean") result.fill = fill;
         else if (fill !== undefined) fail(d, `metadata.fill is true (the page fills the window below the top bar, edge to edge) or false`);
+        const group = (meta as { group?: unknown } | null)?.group;
+        if (typeof group === "string" && group.trim() && group.trim().length <= GROUP_MAX) result.group = group.trim();
+        else if (group !== undefined) fail(d, `metadata.group is a short name (at most ${GROUP_MAX} characters, "Opuscar"): its siblings with the same one are listed together under it in the rail`);
+        const icon = (meta as { icon?: unknown } | null)?.icon;
+        const bad = icon === undefined ? null : iconError(icon);
+        if (bad) fail(d, bad);
+        else if (typeof icon === "string" && icon.trim()) result.icon = icon.trim();
         continue;
       }
       if (which === "actions") {
@@ -587,13 +604,56 @@ export function analyze(
   return result;
 }
 
+// metadata.group: a name the rail shows above a group of siblings, so it is short.
+const GROUP_MAX = 40;
+
+// metadata.icon: the inside of a 24×24 SVG the shell puts into the rail as markup, so it may hold shapes and their
+// geometry and nothing else: no script, no event handler, no link or style that could reach outside the icon.
+const ICON_MAX = 4096;
+const ICON_ELEMENTS = new Set(["path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "g"]);
+const ICON_ATTRIBUTES = new Set(["d", "x", "y", "width", "height", "rx", "ry", "cx", "cy", "r", "x1", "y1", "x2", "y2", "points", "transform", "class", "opacity", "fill-rule", "clip-rule"]);
+const ICON_TAG = /<(\/?)([A-Za-z][\w:-]*)((?:\s+[^\s=/>"']+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/y;
+const ICON_ATTRIBUTE = /([^\s=/>"']+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const ICON_HINT = `the inside of a 24×24 SVG, as a string ('<rect x="3" y="5" width="18" height="14" rx="3"/><path class="o" d="M8 5v14"/>')`;
+
+/** Why a metadata.icon is not one (null: it is): a string of shapes (ICON_ELEMENTS) with their geometry (ICON_ATTRIBUTES). */
+export function iconError(icon: unknown): string | null {
+  if (typeof icon !== "string") return `metadata.icon is ${ICON_HINT}`;
+  if (icon.length > ICON_MAX) return `metadata.icon is ${icon.length} characters; an icon is at most ${ICON_MAX}`;
+  const open: string[] = [];
+  let at = 0;
+  while (at < icon.length) {
+    const space = /\s*/y;
+    space.lastIndex = at;
+    at += space.exec(icon)![0].length;
+    if (at >= icon.length) break;
+    ICON_TAG.lastIndex = at;
+    const m = ICON_TAG.exec(icon);
+    if (!m) return `metadata.icon has ${JSON.stringify(icon.slice(at, at + 24))}${icon.length > at + 24 ? "…" : ""} where an element should be: it is ${ICON_HINT}, elements only (no text, comments or <svg> around them)`;
+    at = ICON_TAG.lastIndex;
+    const [, closing, name, attrs, selfClosing] = m;
+    if (!ICON_ELEMENTS.has(name)) return `metadata.icon: <${name}> is not one of its shapes (${[...ICON_ELEMENTS].join(", ")})`;
+    if (closing) {
+      if (attrs.trim() || selfClosing) return `metadata.icon: </${name}> closes with nothing else in it`;
+      if (open.pop() !== name) return `metadata.icon: </${name}> closes no <${name}>`;
+      continue;
+    }
+    for (const [, attr] of attrs.matchAll(ICON_ATTRIBUTE)) {
+      if (!ICON_ATTRIBUTES.has(attr)) return `metadata.icon: ${attr} is not one of a shape's attributes in an icon (${[...ICON_ATTRIBUTES].join(", ")})`;
+    }
+    if (!selfClosing) open.push(name);
+  }
+  if (open.length) return `metadata.icon: <${open[open.length - 1]}> is not closed`;
+  return null;
+}
+
 /** What each declaration is, as Extracted has it. */
 const DECLARED: Record<string, (keyof Extracted)[]> = {
   agents: ["agents", "agentsFn"],
   triggers: ["triggers"],
   tools: ["tools"],
   config: ["config"],
-  metadata: ["title", "order", "lang", "fill"],
+  metadata: ["title", "order", "lang", "fill", "icon", "group"],
 };
 
 /**
@@ -651,6 +711,8 @@ export function mergeManifest(parts: Extracted[]): Extracted {
     m.order = p.order ?? m.order;
     m.lang = p.lang ?? m.lang;
     m.fill = p.fill ?? m.fill;
+    m.icon = p.icon ?? m.icon;
+    m.group = p.group ?? m.group;
     m.errors.push(...p.errors);
   }
   // A remote agent's door here is its node's message route, so it is the node's one agent.

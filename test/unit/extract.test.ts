@@ -1,7 +1,7 @@
 // Declarations read from a node's code without running it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { analyze, applyEdits, cronFields, everyMs, mergeManifest, serverExports, watchOf } from "../../packages/core/src/extract.ts";
+import { analyze, applyEdits, cronFields, everyMs, iconError, inherit, mergeManifest, serverExports, watchOf } from "../../packages/core/src/extract.ts";
 
 const page = `
 import { useData, type Agents } from "pagent";
@@ -68,6 +68,50 @@ test("tools (shorthand input becomes a JSON Schema), triggers, metadata", () => 
   assert.equal(r.order, 2);
   assert.equal(r.lang, "zh-CN"); // the language it is in (the home page's is the app's: the engine's words follow it)
   assert.match(analyze(`export const metadata = { title: "x", lang: "Chinese" };`).errors.join(), /metadata.lang must be a language tag/);
+});
+
+test("metadata.icon: the inside of a 24×24 SVG, shapes and their geometry only; merged and inherited as the title is", () => {
+  const icon = `<rect x="3" y="5" width="18" height="14" rx="3"/><path class="o" d="M8 5v14"/><circle class="d" cx="15.5" cy="15" r="1.6"/>`;
+  assert.equal(analyze(`export const metadata = { title: "Films", icon: '${icon}' };`).icon, icon);
+  // Written over lines, nested in a group, closed by a tag of its own, as a template or a sum of strings: still static.
+  const g = `<g transform="rotate(-12 18 12)" opacity="0.8">\n  <rect x="16" y="4.5" width="4.5" height="15.5" rx="1.5"></rect>\n</g>`;
+  assert.equal(analyze(`export const metadata = { icon: \`${g}\` };`).icon, g);
+  assert.equal(analyze(`export const metadata = { icon: '<path d="M4 6h16"/>' + '<path fill-rule="evenodd" d="M4 12h16"/>' };`).icon, `<path d="M4 6h16"/><path fill-rule="evenodd" d="M4 12h16"/>`);
+  assert.deepEqual(analyze(`export const metadata = { icon: '<line x1="4" y1="4" x2="20" y2="20"/>' };`).errors, []);
+  // Anything that could reach outside the icon, or is no icon, says why.
+  const why = (value: string) => analyze(`export const metadata = { icon: ${value} };`).errors.join();
+  assert.match(why(`'<script>alert(1)</script>'`), /<script> is not one of its shapes/);
+  assert.match(why(`'<path d="M0 0" onclick="alert(1)"/>'`), /onclick is not one of a shape's attributes/);
+  assert.match(why(`'<path style="fill:red" d="M0 0"/>'`), /style is not one of a shape's attributes/);
+  assert.match(why(`'<use href="#x"/>'`), /<use> is not one of its shapes/);
+  assert.match(why(`'<image href="https://x.example/a.png"/>'`), /<image> is not one of its shapes/);
+  assert.match(why(`'<svg viewBox="0 0 24 24"><path d="M0 0"/></svg>'`), /<svg> is not one of its shapes/);
+  assert.match(why(`'<path d="M0 0"/>hello'`), /"hello" where an element should be/);
+  assert.match(why(`'<!-- x --><path d="M0 0"/>'`), /where an element should be/);
+  assert.match(why(`'<path d=M0/>'`), /where an element should be/); // an attribute's value is quoted
+  assert.match(why(`'<g><path d="M0 0"/>'`), /<g> is not closed/);
+  assert.match(why(`'<path d="M0 0"/></g>'`), /<\/g> closes no <g>/);
+  assert.match(why(`24`), /metadata.icon is the inside of a 24×24 SVG/);
+  assert.match(iconError(`<path d="${"M0 0 ".repeat(1000)}"/>`) ?? "", /an icon is at most 4096/);
+  assert.equal(iconError(icon), null);
+  // A node's layout.tsx and page.tsx: the page's wins, as its title does; an instance's own page.tsx keeps the shared one's.
+  const layout = analyze(`export const metadata = { icon: '<path d="M1 1"/>' };`);
+  assert.equal(mergeManifest([layout, analyze(`export const metadata = { title: "x" };`)]).icon, `<path d="M1 1"/>`);
+  assert.equal(mergeManifest([layout, analyze(`export const metadata = { icon: '<path d="M2 2"/>' };`)]).icon, `<path d="M2 2"/>`);
+  const shared = analyze(`export const metadata = { title: "Session", icon: '<path d="M3 3"/>' };`);
+  assert.equal(inherit([analyze(`export default function P() { return null; }`), shared]).part.icon, `<path d="M3 3"/>`);
+});
+
+test("metadata.group: a short name its siblings share; merged and inherited as the title is", () => {
+  assert.equal(analyze(`export const metadata = { title: "Opuscar", group: " 开源项目 " };`).group, "开源项目");
+  assert.match(analyze(`export const metadata = { group: "" };`).errors.join(), /metadata.group is a short name \(at most 40 characters/);
+  assert.match(analyze(`export const metadata = { group: ${JSON.stringify("x".repeat(41))} };`).errors.join(), /at most 40 characters/);
+  assert.match(analyze(`export const metadata = { group: ["a", "b"] };`).errors.join(), /metadata.group is a short name/);
+  assert.equal(analyze(`export const metadata = { group: ${JSON.stringify("x".repeat(40))} };`).errors.length, 0);
+  const layout = analyze(`export const metadata = { group: "Tools" };`);
+  assert.equal(mergeManifest([layout, analyze(`export const metadata = { title: "x" };`)]).group, "Tools");
+  assert.equal(mergeManifest([layout, analyze(`export const metadata = { group: "Mine" };`)]).group, "Mine");
+  assert.equal(inherit([analyze(`export default function P() { return null; }`), layout]).part.group, "Tools");
 });
 
 test("string actions are gone: an action is a function of a \"use server\" file", () => {

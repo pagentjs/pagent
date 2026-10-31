@@ -7,6 +7,7 @@
 //   inbox: the default message route, `export { inbox as POST } from "pagent/server"` in api/<node>/message/route.ts
 //   keys: keys to the app's public face, one subtree each (SPEC 13.7): a demo's code gives a visitor one for its agent
 //   nodes: a dynamic page's instances, moving a node, removing an instance (SPEC 13.9)
+//   badge: what a page's row in the rail says after its title (a count, a dot), as the app knows it at run time
 //   node: the node this code runs as (its address, an instance's params, its folder, the app's)
 import { join } from "node:path";
 import { axModule } from "./ax-module.ts";
@@ -121,9 +122,30 @@ export const nodes = {
   remove: (path: string) => engine<{ removed: string }>("/_pagent/remove", { path }).then((r) => r.removed),
 };
 
-async function engine<T>(path: string, body?: unknown): Promise<T> {
+/**
+ * A page's badge, as the rail shows it after the page's title: a count ("64"); tone "attention" when it wants the user
+ * (on a pill: "等你拍板 4"), "quiet" when it only says how many (faint, the default), "new" for something new (a dot,
+ * with the count if there is one). What it counts is the app's, so the app's code sets it whenever that changes (an
+ * action after it writes, a trigger watching the file); the engine keeps it across restarts, and open pages redraw at
+ * once.
+ *   await badge(4, { tone: "attention" })        this node's page (an action's node; a route's: the root)
+ *   await badge(unmarked.length)                 0 is none, so a count goes in as it is
+ *   await badge(null, { tone: "new" })           a dot alone
+ *   await badge(null)                            no badge
+ *   await badge(3, { path: "/opuscar/styles" })  another page's (as the engine or people write its address)
+ * It is the badge as set (null: none). Throws for a path that is no page the rail lists.
+ */
+export async function badge(count: number | null, opts: { tone?: "attention" | "quiet" | "new"; path?: string } = {}): Promise<Badge | null> {
+  const r = await engine<{ path: string; badge: Badge | null }>("/_pagent/badge", { path: opts.path ?? node.path, count, ...(opts.tone ? { tone: opts.tone } : {}) }, "badge works");
+  return r.badge;
+}
+
+/** A page's badge as the rail has it: count (none: a dot alone, tone "new") and tone. */
+export type Badge = { count?: number; tone: "attention" | "quiet" | "new" };
+
+async function engine<T>(path: string, body?: unknown, what = "nodes work"): Promise<T> {
   const url = process.env.PAGENT_URL;
-  if (!url) throw new Error("nodes work in this app's server code (an action, a route), as the engine runs it");
+  if (!url) throw new Error(`${what} in this app's server code (an action, a route), as the engine runs it`);
   const res = await fetch(url + path, body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const r = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(r.error ?? `${path} failed (${res.status})`);

@@ -42,6 +42,22 @@
   /* layout */
   --pagent-reading-width: 720px;        /* a conversation's column: about 44 CJK characters */
   --pagent-rail-width: 248px;
+  /* the rail: along the window's edge by default; a look may float it as a panel (an inset, a radius, a shadow: lengths
+     with their unit, 10px, never a bare 0) */
+  --pagent-rail-inset: 0px;
+  --pagent-rail-radius: 0px;
+  --pagent-rail-shadow: none;
+  --pagent-rail-border: var(--pagent-border);   /* its edge toward the page (transparent: none) */
+  --pagent-rail-current: color-mix(in srgb, var(--pagent-text) 8%, transparent);   /* the page on screen's row */
+  --pagent-rail-current-text: var(--pagent-text);
+  --pagent-rail-group: var(--pagent-muted);     /* a group's name (metadata.group) */
+  /* a page's icon in the rail (metadata.icon): resting color; the current page's is the accent, its closed shapes filled */
+  --pagent-rail-icon: var(--pagent-muted);
+  --pagent-rail-icon-fill: none;
+  /* a page's badge in the rail (badge() from server code): a count is faint; one that wants the user is on a pill; new is a dot */
+  --pagent-badge-attention: var(--pagent-accent-soft);
+  --pagent-badge-attention-text: var(--pagent-accent);
+  --pagent-badge-new: var(--pagent-accent);
   /* the agent's terminal: dark in both themes */
   --pagent-terminal-bg: #161615;
   --pagent-terminal-fg: #e6e4df;
@@ -163,16 +179,20 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-crumbs [aria-current="page"] { font-weight: 500; color: var(--pagent-text); overflow: hidden; text-overflow: ellipsis; }
 .pagent-crumb-dir { color: var(--pagent-faint); }
 
+/* Inset from the window's edges by --pagent-rail-inset (0: along them), so it stays a window's height on screen. */
 .pagent-rail {
-  position: sticky; top: 0; z-index: 20;
-  flex: none; width: var(--pagent-rail-width); height: 100vh; overflow: auto;
+  position: sticky; top: var(--pagent-rail-inset); z-index: 20;
+  flex: none; width: var(--pagent-rail-width); height: calc(100vh - 2 * var(--pagent-rail-inset)); overflow: auto;
+  margin: var(--pagent-rail-inset) 0 var(--pagent-rail-inset) var(--pagent-rail-inset);
   display: flex; flex-direction: column; gap: 1px;
   padding: 8px 8px 16px;
   background: var(--pagent-chrome);
-  border-right: 1px solid var(--pagent-border);
+  border-right: 1px solid var(--pagent-rail-border);
+  border-radius: var(--pagent-rail-radius);
+  box-shadow: var(--pagent-rail-shadow);
 }
 .pagent-app[data-rail="over"] .pagent-rail {
-  position: fixed; left: 0; width: min(300px, 86vw);
+  position: fixed; left: var(--pagent-rail-inset); margin: 0; width: min(300px, 86vw);
   background: var(--pagent-surface); box-shadow: var(--pagent-shadow); animation: pagent-slide 200ms var(--pagent-ease);
 }
 .pagent-scrim { position: fixed; inset: 0; z-index: 19; background: var(--pagent-scrim); animation: pagent-fade 200ms var(--pagent-ease); }
@@ -183,7 +203,7 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
    lines start under the title, so the dots make one column to scan. */
 .pagent-railitem { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: var(--pagent-radius-sm); color: var(--pagent-text); text-decoration: none; transition: background-color 120ms var(--pagent-ease); }
 .pagent-railitem:hover, .pagent-railhead:hover > .pagent-railitem { background: color-mix(in srgb, var(--pagent-text) 5%, transparent); }
-.pagent-railhead > .pagent-railitem[aria-current="page"] { background: color-mix(in srgb, var(--pagent-text) 8%, transparent); }
+.pagent-railhead > .pagent-railitem[aria-current="page"] { background: var(--pagent-rail-current); color: var(--pagent-rail-current-text); }
 .pagent-railhome { min-height: 36px; justify-content: center; }
 .pagent-railhome .pagent-railtitle { font-weight: 600; }
 .pagent-railrow { display: flex; align-items: center; gap: 8px; min-width: 0; line-height: 20px; }
@@ -191,11 +211,30 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-railitem[data-unread] .pagent-railtitle { font-weight: 600; }
 .pagent-railtime { flex: none; font-size: 11.5px; color: var(--pagent-faint); font-variant-numeric: tabular-nums; }
 .pagent-railnote, .pagent-railsaid { margin-left: 16px; font-size: 12.5px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A page's icon, between its dot and its title (the text lines below then start under the title still): lines of the
+   row's color on a 24 grid; in the current page's, the closed shapes filled, but an open line ("o") and a dot ("d"). */
+.pagent-railicon {
+  flex: none; width: 16px; height: 16px; color: var(--pagent-rail-icon);
+  fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.pagent-railicon .o { fill: none; }
+.pagent-railicon .d { fill: currentColor; stroke: none; }
+.pagent-railitem[aria-current="page"] .pagent-railicon { color: var(--pagent-accent); }
+.pagent-railitem[aria-current="page"] .pagent-railicon :not(.o, .d) { fill: var(--pagent-rail-icon-fill); }
+.pagent-railitem[data-icon] :is(.pagent-railnote, .pagent-railsaid) { margin-left: 40px; }
+/* A page's badge, after its title and before its time: a faint count, a pill that wants the user, a dot for new. */
+.pagent-railbadge {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  font: 500 11px/16px var(--pagent-mono); font-variant-numeric: tabular-nums; color: var(--pagent-faint);
+}
+.pagent-railbadge[data-tone="attention"] { padding: 0 6px; border-radius: var(--pagent-radius-sm); background: var(--pagent-badge-attention); color: var(--pagent-badge-attention-text); }
+.pagent-railbadge[data-tone="new"] { color: var(--pagent-badge-new); }
+.pagent-railbadge[data-tone="new"]::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--pagent-badge-new); }
 .pagent-railnote[data-state="working"] { color: var(--pagent-working-text); }
 .pagent-railnote[data-state="waiting"] { color: var(--pagent-waiting-text); }
 .pagent-railsaid { color: var(--pagent-muted); }
 .pagent-railsaid[data-asks] { color: var(--pagent-text); }
-.pagent-raillabel { padding: 14px 8px 4px; font-size: 12px; font-weight: 500; color: var(--pagent-faint); }
+.pagent-raillabel { display: flex; align-items: center; gap: 8px; padding: 14px 8px 4px; font-size: 12px; font-weight: 500; color: var(--pagent-faint); }
 /* What can be done on a row: "+" (a new page under it) and "⋯" (an instance's rename and delete), at its top right,
    where its time is, while it is hovered or focused; on a touch screen always, the time moved aside for them. */
 .pagent-railentry { display: flex; flex-direction: column; gap: 1px; }
@@ -219,6 +258,33 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 }
 .pagent-railmenu button { border: 0; background: transparent; text-align: left; font-weight: 400; padding: 5px 8px; border-radius: 4px; }
 .pagent-railmenu button[data-danger] { color: var(--pagent-danger); }
+/* A group of siblings (metadata.group): its name, a button that folds it, the chevron in the dots' column so the name
+   starts where titles do. Folded, it says how many pages it holds. */
+.pagent-railgroup {
+  display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 10px; padding: 4px 8px;
+  border: 0; border-radius: var(--pagent-radius-sm); background: transparent; text-align: left;
+  font-size: 12px; font-weight: 500; line-height: 18px; color: var(--pagent-rail-group);
+}
+.pagent-railgroup:hover:not(:disabled) { background: color-mix(in srgb, var(--pagent-text) 5%, transparent); }
+.pagent-railgroup > svg { flex: none; width: 12px; height: 12px; margin: 0 -2px; }
+.pagent-railgroupname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pagent-railcount { flex: none; font: 500 11px/16px var(--pagent-mono); font-variant-numeric: tabular-nums; color: var(--pagent-faint); }
+/* A chevron: down while open, right while folded. */
+:is(.pagent-railgroup, .pagent-railfold) > svg { transform: rotate(90deg); transition: transform 120ms var(--pagent-ease); }
+:is(.pagent-railgroup, .pagent-railfold)[aria-expanded="false"] > svg { transform: none; }
+/* A row with rows under it folds them with its chevron, at its top right (left of "+" and "⋯"), while hovered or
+   focused, and always while folded. What the fold hides that wants the user stays on the row (.pagent-railfolded). */
+.pagent-railhead > .pagent-railfold { position: absolute; top: 5px; right: 4px; display: none; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; }
+.pagent-railhead:has(> .pagent-railhome) > .pagent-railfold { top: 7px; }
+.pagent-railhead:has(> .pagent-raillabel) > .pagent-railfold { top: 11px; }
+.pagent-railhead:is(:hover, :focus-within, [data-open], [data-folded]) > .pagent-railfold { display: inline-flex; }
+.pagent-railhead[data-fold] > .pagent-railacts { right: 28px; }
+.pagent-railhead[data-fold]:is(:hover, :focus-within, [data-open], [data-folded]) :is(.pagent-railrow, .pagent-raillabel) { padding-right: calc(var(--pagent-acts, 0px) + 26px); }
+.pagent-railfolded { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+@media (hover: none) {
+  .pagent-railhead > .pagent-railfold { display: inline-flex; }
+  .pagent-railhead[data-fold] :is(.pagent-railrow, .pagent-raillabel) { padding-right: calc(var(--pagent-acts, 0px) + 26px); }
+}
 /* A name being typed: a new page under a row, or a page's new name. What went wrong stays under it. */
 .pagent-railname { display: flex; flex-direction: column; gap: 4px; padding: 4px 8px 6px; }
 .pagent-railname input { width: 100%; min-width: 0; padding: 3px 8px; font-size: 13px; line-height: 20px; }

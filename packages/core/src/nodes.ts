@@ -4,6 +4,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { agentsOf } from "./agents-fn.ts";
+import { badgeOf, type Badge } from "./badges.ts";
 import { compileFile, importedNode, serverModule, type Compiled } from "./compile.ts";
 import { Deps } from "./deps.ts";
 import { broadcast } from "./events.ts";
@@ -43,10 +44,13 @@ export function clientInfo(info: NodeInfo): ClientNodeInfo {
  * A page as navigation shows it. path: its address as the engine has it (what tell and agent status take); url: as
  * people read it and links write it (/studio/demo/修登录 for /studio/demo/+4fee+767b+5f55), what the address bar says.
  * titled: false when the title is only the folder's name. lang: the language it says it is in (metadata.lang); the
- * home page's is the app's. An instance of a dynamic page: instanceOf, its code's path (/studio/[ws]/[id]), and
- * createdBy, who made it with `tell --new` (made.ts), which the rail nests it under.
+ * home page's is the app's. icon: what its rail row shows before the title (metadata.icon, an instance its page's);
+ * group: the group of its siblings it is listed in (metadata.group).
+ * badge: what the row says after it, set by the app's server code (badges.ts). An instance of a dynamic page:
+ * instanceOf, its code's path (/studio/[ws]/[id]), and createdBy, who made it with `tell --new` (made.ts), which the
+ * rail nests it under.
  */
-export type PageEntry = { path: string; url: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; instanceOf?: string; createdBy?: string };
+export type PageEntry = { path: string; url: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; icon?: string; group?: string; badge?: Badge; instanceOf?: string; createdBy?: string };
 
 /** A page without metadata.title: its folder's name ("meal-plan" → "Meal plan"); the root is "Home". */
 export function fallbackTitle(path: string): string {
@@ -208,9 +212,12 @@ export class Nodes {
         const title = own ?? (decl?.code ? (instanceKeyOf(name) ?? name) : fallbackTitle(path));
         const order = decl?.manifest.order;
         const lang = decl?.manifest.lang;
+        const icon = decl?.manifest.icon;
+        const group = decl?.manifest.group;
+        const badge = badgeOf(this.root, path);
         const by = decl?.code ? madeOf(this.root, path).by : undefined;
         const of = decl?.code ? { instanceOf: decl.code, ...(by ? { createdBy: by } : {}) } : {};
-        return { path, url: shownPath(this.root, path), title, titled: !!own, agents: decl?.manifest.agents.map((a) => a.name) ?? [], ...(order !== undefined ? { order } : {}), ...(lang ? { lang } : {}), ...of };
+        return { path, url: shownPath(this.root, path), title, titled: !!own, agents: decl?.manifest.agents.map((a) => a.name) ?? [], ...(order !== undefined ? { order } : {}), ...(lang ? { lang } : {}), ...(icon ? { icon } : {}), ...(group ? { group } : {}), ...(badge ? { badge } : {}), ...of };
       }),
     );
   }
