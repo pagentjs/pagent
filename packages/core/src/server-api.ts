@@ -8,10 +8,12 @@
 //   keys: keys to the app's public face, one subtree each (SPEC 13.7): a demo's code gives a visitor one for its agent
 //   nodes: a dynamic page's instances, moving a node, removing an instance (SPEC 13.9)
 //   node: the node this code runs as (its address, an instance's params, its folder, the app's)
+//   settings: the person's settings, the same for all their apps (SPEC 13.15)
 import { join } from "node:path";
 import { axModule } from "./ax-module.ts";
 import type { Caller } from "./caller.ts";
 import { readData, writeData } from "./data.ts";
+import { readSettings, type Settings } from "./settings.ts";
 
 export const { ax } = await axModule();
 
@@ -111,12 +113,18 @@ export type Instance = { path: string; url: string; params: Record<string, strin
 /**
  * The app's nodes, for server code that works on a dynamic page's instances (SPEC 13.9; the person has the rail for it):
  *   await nodes.instances("/studio/[ws]/[id]")   → [{ path: "/studio/demo/fix-login", url, params: { ws: "demo", id: "fix-login" }, createdBy?, createdAt }, …]
+ *   await nodes.make("/studio/demo/fix-login", { data: { "harness.json": { cli: "codex" } } })   → that instance, made now
  *   await nodes.move("/studio/demo/fix-login", "/studio/demo/fix-auth")   as `pagent mv`: with its data, state, sessions
  *   await nodes.remove("/studio/demo/fix-auth")   an instance's folder goes (refused while its agent is in a turn)
- * A new instance is made by opening its page, or by tell(address, text, { new: true }).
+ * A new instance is made by opening its page, by tell(address, text, { new: true }), or by nodes.make: with data files
+ * in it from the start (data: name → content, as data.write takes it), which its agents function already reads (the
+ * one thing an instance can be made with that its params do not say: a choice made when it was, kept with it). It is
+ * an error when the page refuses its params, when it is there already, or for a name that is no data file. Made by
+ * whom this code runs for (createdBy), as tell's new is.
  */
 export const nodes = {
   instances: (page: string) => engine<{ instances: Instance[] }>(`/_pagent/instances?of=${encodeURIComponent(page)}`).then((r) => r.instances),
+  make: (path: string, opts: { data?: Record<string, unknown> } = {}) => engine<Instance>("/_pagent/make", { call: process.env.PAGENT_CALL, path, data: opts.data ?? {} }),
   move: (from: string, to: string) => engine<{ from: string; to: string }>("/_pagent/move", { from, to }).then((r) => ({ from: r.from, to: r.to })),
   remove: (path: string) => engine<{ removed: string }>("/_pagent/remove", { path }).then((r) => r.removed),
 };
@@ -146,3 +154,12 @@ export const data = {
     writeData(process.cwd(), "/", file, value);
   },
 };
+
+/**
+ * The person's settings (SPEC 13.15), the same for every pagent app on this machine: `lang` (a tag, or null: each app's
+ * own), `theme` ("light" | "dark", or null: the system's), `harness` ("claude" | "codex": what an agent declared without
+ * a cli runs, and what a new session of yours should default to). Read from the file each call, so always current; the
+ * person changes them in the shell's Settings.
+ *   const { harness } = settings();
+ */
+export const settings = (): Settings => readSettings();

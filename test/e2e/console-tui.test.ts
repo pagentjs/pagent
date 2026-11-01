@@ -1,5 +1,5 @@
-// The console of an agent whose turns go into its TUI (the fake runner with a TUI): a Stop button while it is busy; a
-// permission prompt in its terminal that nobody sees, said in its head and answered on a card; a message written while
+// The console of an agent whose turns go into its TUI (the fake runner with a TUI): a Stop button while it is busy, and
+// one next to "may be stuck"; a permission prompt in its terminal that nobody sees, said in its head and answered on a card; a message written while
 // it works, queued for when it is done or said now (into its turn).
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
@@ -34,6 +34,27 @@ describe("the console of an agent in its TUI", () => {
     await stop.waitFor({ state: "detached" });
     assert.equal((await status()).busy, false);
     assert.ok(lines((await app.get("/_pagent/history?node=/&agent=bot")).messages).includes("user: [Request interrupted by user]"));
+    await page.close();
+  });
+
+  test("quiet so long it may be stuck: Stop next to that, at the end of the conversation", async () => {
+    const long = app.post("/_pagent/ask", { node: "/", agent: "bot", message: "!sleep 30000\n!say never" });
+    await until(async () => (await status()).terminal.state === "working", "the turn in its terminal");
+    const page = await browser.newPage();
+    // Its status as the server says it of a turn quiet for 16 minutes (it takes 15 to say so).
+    await page.route("**/_pagent/agent-status?*", async (route) => {
+      const res = await route.fetch();
+      const s = await res.json();
+      await route.fulfill({ response: res, json: s.busy ? { ...s, quietSince: Date.now() - 16 * 60_000, stuck: true } : s });
+    });
+    await page.goto(app.url + "/");
+    const working = page.locator(".pagent-working", { hasText: "quiet for 16 min, may be stuck" });
+    await working.waitFor();
+    await working.getByRole("button", { name: "Stop" }).click();
+    assert.equal((await long).text, "");
+    await working.waitFor({ state: "detached" });
+    assert.equal((await status()).busy, false);
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await page.close();
   });
 

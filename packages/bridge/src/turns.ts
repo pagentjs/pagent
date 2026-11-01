@@ -33,9 +33,6 @@ const textOf = (m: UIMessage) => m.parts.map((p) => (p.type === "text" ? p.text 
 /** How the engine tells an agent what the person answered (core: commands/agents.ts, told()). */
 const ANSWER = /^The user (answered your question|filled in the|cancelled the) /;
 
-/** Claude Code's summary after a compaction, as it reads (for a transcript that did not mark it). */
-const SUMMARY = /^\s*This session is being continued from a previous conversation/;
-
 export function fromOf(m: UIMessage): From {
   if (m.role !== "user") return { kind: "reply" };
   const { caller, kind } = (m.metadata as Meta) ?? {};
@@ -44,7 +41,7 @@ export function fromOf(m: UIMessage): From {
   switch (caller?.kind) {
     case undefined:
     case "user":
-      return SUMMARY.test(textOf(m)) ? { kind: "compaction" } : { kind: "person" };
+      return { kind: "person" }; // a compaction's summary is marked as one by the runner (metadata.kind)
     // The person's answer to the agent's question or form comes through the engine, but it is theirs (core: told()).
     case "pagent": return ANSWER.test(textOf(m)) ? { kind: "answer" } : { kind: "pagent" };
     case "agent": return { kind: "agent", node: caller.node, agent: caller.agent };

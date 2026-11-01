@@ -125,14 +125,15 @@ export default function Page({ cards }) { return <AgentConsole inline cards={car
   test("turns between agents fold into a line; the summary after a compaction is a divider, not the person's", async () => {
     // Turns from another agent and from pagent, and the summary Claude Code goes on from after a compaction, as a
     // transcript has them (the fake runner's): the lines the engine gives the agent (core: caller.ts).
-    const said = (uuid: string, type: "user" | "assistant", text: string) =>
-      appendFileSync(join(app.root, ".state", "bot", "transcript.jsonl"), JSON.stringify({ uuid, type, text, at: new Date().toISOString() }) + "\n");
+    const said = (uuid: string, type: "user" | "assistant", text: string, kind?: string) =>
+      appendFileSync(join(app.root, ".state", "bot", "transcript.jsonl"), JSON.stringify({ uuid, type, text, at: new Date().toISOString(), ...(kind ? { kind } : {}) }) + "\n");
     await app.post("/_pagent/ask", { node: "/", agent: "bot", message: "!say ok", origin: "/" }); // the transcript is there
     said("w1", "user", "(from /worker#worker) The report is in report.md.");
     said("w2", "assistant", "Thanks worker, noted for later.");
     said("p1", "user", "(from pagent) Reply from /x#y:\nok");
     said("p2", "assistant", "No response requested.");
-    said("summary-1", "user", "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. **Primary request**: a test.");
+    // Marked by its runner as a compaction's summary (as the claude runner marks Claude Code's).
+    said("summary-1", "user", "This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. **Primary request**: a test.", "compaction");
     await app.post("/_pagent/ask", { node: "/", agent: "bot", message: "!say pressed", origin: "/" }); // a page's button: the person's doing, shown as it is
     const page = await open();
     const log = page.locator(".pagent-console-log");

@@ -9,7 +9,7 @@
     "dev": "node scripts/dev.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p packages/shell/tsconfig.json",
     "compile-all": "node scripts/check.ts",
-    "test": "node --import ./test/lib/register.ts --test 'test/unit/*.test.ts' 'test/smoke/*.test.ts'",
+    "test": "node --import ./test/lib/register.ts --test 'test/unit/*.test.ts' 'test/smoke/*.test.ts' 'test/conformance/*.test.ts'",
     "e2e": "node --test 'test/e2e/*.test.ts'",
     "check": "node --run typecheck && node --run compile-all && node --run test && node --run e2e"
   },

@@ -24,7 +24,7 @@ let running = 0;
 export async function answerStranger(ctx: Ctx, ref: AgentRef, caller: Caller & { kind: "external" }, message: string): Promise<string> {
   const decl = await agentDecl(ctx, ref);
   if (decl.strangers === false) throw new Error(`${keyOf(ref)} does not answer strangers (strangers: false): ask the app's owner for a key`);
-  if (!(await capabilitiesOf(decl)).strangers) throw new Error(`${keyOf(ref)} does not answer strangers: its harness (runner ${decl.runner}) has no turn without tools. Ask the app's owner for a key`);
+  if (!(await capabilitiesOf(decl)).ops.has("stranger")) throw new Error(`${keyOf(ref)} does not answer strangers: its harness (runner ${decl.runner}) has no turn without tools. Ask the app's owner for a key`);
   if (running >= AT_ONCE) throw new Error(`${keyOf(ref)} is answering other strangers: try again in a moment`);
   const cap = typeof decl.strangers === "number" && decl.strangers > 0 ? Math.floor(decl.strangers) : STRANGER_TOKENS;
   const input = {

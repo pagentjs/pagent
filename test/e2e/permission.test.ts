@@ -23,11 +23,12 @@ describe("a permission request", () => {
   });
 
   test("shows once, where the agent's conversation is or top right elsewhere, and Allow answers it", async () => {
-    // What Claude Code's PermissionRequest hook sends; the response is the decision, so it stays open until answered.
+    // What a runner sends when its harness asks (a permission request); the response is the decision, so it stays open
+    // until answered.
     const decision = fetch(`${app.url}/_pagent/permission?node=/&agent=bot`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tool_name: "Bash", tool_input: { command: "curl -sI https://example.com" } }),
+      body: JSON.stringify({ tool: "Bash", input: { command: "curl -sI https://example.com" }, meta: { kind: "command", command: "curl -sI https://example.com" } }),
     }).then((r) => r.json());
     const page = await browser.newPage();
 
@@ -43,8 +44,8 @@ describe("a permission request", () => {
     const allow = card.getByRole("button", { name: "Allow" });
     assert.match((await allow.getAttribute("class")) ?? "", /pagent-primary/);
     await allow.click();
-    const r = (await decision) as { hookSpecificOutput: { decision: { behavior: string } } };
-    assert.equal(r.hookSpecificOutput.decision.behavior, "allow");
+    const r = (await decision) as { decision: { allow: boolean } };
+    assert.equal(r.decision.allow, true);
     await card.waitFor({ state: "detached" });
     await page.close();
   });

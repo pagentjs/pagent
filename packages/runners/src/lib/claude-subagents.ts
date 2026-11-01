@@ -39,7 +39,22 @@ export class SubagentLog {
   /** How its own background sub-agents ended (the notifications it got). */
   outcomes = new Map<string, Outcome>();
 
+  /**
+   * ownCall: for a fork (meta agentType "fork"), the call that started it. A fork's transcript begins with the whole
+   * conversation it was forked from, up to and including that call: none of it is the fork's, so it is skipped (else
+   * its steps would be the parent's, and the calls in it, its own among them, would be followed again without end).
+   */
+  private ownCall?: string;
+  constructor(ownCall?: string) {
+    this.ownCall = ownCall;
+  }
+
   line(e: any) {
+    if (this.ownCall) {
+      const content = e?.type === "assistant" ? e.message?.content : null;
+      if (Array.isArray(content) && content.some((b: any) => b?.type === "tool_use" && b.id === this.ownCall)) this.ownCall = undefined;
+      return;
+    }
     if (this.cut || !e || (e.type !== "user" && e.type !== "assistant")) return;
     if (e.timestamp) (this.firstAt ??= e.timestamp), (this.lastAt = e.timestamp);
     if (e.isMeta) return;
@@ -114,7 +129,7 @@ export function streamNotification(m: any): { toolUseId: string; outcome: Outcom
 const statusOf = (s: string | undefined): SubagentStatus | null =>
   !s ? null : s === "completed" ? "done" : /fail|error/.test(s) ? "error" : /kill|stop|cancel|interrupt|abort/.test(s) ? "stopped" : null;
 
-export type Meta = { agentType?: string; description?: string; toolUseId?: string; spawnDepth?: number; requestShape?: string; model?: string };
+export type Meta = { agentType?: string; description?: string; toolUseId?: string; spawnDepth?: number; requestShape?: string; model?: string; finished?: boolean };
 
 /**
  * What a sub-agent is and how it is doing, from what is known: the call's input, its meta, its transcript, its end.
@@ -170,6 +185,9 @@ const parse = (line: string) => {
   }
 };
 
+/** The call to skip to in a sub-agent's transcript: its own, when it is a fork (SubagentLog). */
+const forkCall = (meta: Meta | undefined, id: string) => (meta?.agentType === "fork" ? id : undefined);
+
 /**
  * History: after each Agent call in `messages`, its sub-agent (info and steps, and those of the sub-agents it started).
  * `outcomes`: how calls ended, as the session's transcript says. Returns the sub-agent transcripts it read.
@@ -180,12 +198,16 @@ export function addSubagents(messages: { parts: Part[] }[], transcript: string, 
   const dir = subagentsDir(transcript);
   const metas = readMetas(dir);
   const files: string[] = [];
+  const projected = new Set<string>(); // each call once, whatever transcripts it shows up in
   const project = (id: string, input: any, outcome: Outcome | undefined): Part[] => {
+    if (projected.has(id)) return [];
+    projected.add(id);
     const found = metas.get(id);
     let log: SubagentLog | undefined;
     if (found && existsSync(found.file)) {
-      log = new SubagentLog();
-      for (const l of readFileSync(found.file, "utf8").split("\n")) if (l) log.line(parse(l));
+      const text = readFileSync(found.file, "utf8");
+      log = new SubagentLog(text.includes(id) ? forkCall(found.meta, id) : undefined); // a fork's own call not in it: read it all
+      for (const l of text.split("\n")) if (l) log.line(parse(l));
       files.push(found.file);
     }
     const nested = log ? [...log.agents].flatMap(([nid, ninput]) => project(nid, ninput, log!.outcomes.get(nid))) : [];
@@ -265,7 +287,7 @@ export class SubagentWatcher {
       const found = this.metas.get(id);
       if (!found) continue;
       let t = this.logs.get(id);
-      if (!t) this.logs.set(id, (t = { log: new SubagentLog(), offset: 0, rest: "", file: found.file }));
+      if (!t) this.logs.set(id, (t = { log: new SubagentLog(forkCall(found.meta, id)), offset: 0, rest: "", file: found.file }));
       let size = 0;
       try {
         size = statSync(t.file).size;

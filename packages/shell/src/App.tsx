@@ -1,7 +1,7 @@
 // The shell: URL → route chain (layouts + page) → nested NodeFrames. Around them the navigation (the app's pages by
 // title in a rail, the trail of titles above the page, back after a card), and permission prompts and forms from any
 // agent.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { HostContext, propsFromQuery, provideHost, QuestionCard, RouteContext, type Question, type RouteInfo } from "@pagent/bridge";
 import { chosenLanguage, setAppLanguage, t, tWith, useLanguage } from "@pagent/bridge/i18n";
 import { api, createHost, httpLoader, onHostEvent, qs } from "./host.ts";
@@ -9,14 +9,15 @@ import { McpAppFrame } from "./McpAppFrame.tsx";
 import { TerminalView } from "./TerminalView.tsx";
 import { BridgeNodeFrame, LoaderContext, NodeFrame } from "./NodeFrame.tsx";
 import { go } from "./nav.ts";
-import { Crumbs, notifyChange, Rail, readable, useDocumentTitle, useNotifySetting, usePages, useStatuses, type Page } from "./Nav.tsx";
+import { SettingsButton, SettingsDialog } from "./Settings.tsx";
+import { Crumbs, notifyChange, Rail, RailEdge, readable, useDocumentTitle, useNotifySetting, usePages, useRailWidth, useStatuses, type Page } from "./Nav.tsx";
 
 type RouteEntry = { path: string; file: "page" | "layout" };
 
-// The engine's words are in the app's language, its home page's metadata.lang (i18n.ts): as this browser last saw it
-// until the pages come, so a reload does not start in English. So is the page's, unless the page says its own; where
-// neither says one, it is the reader's (pages are written in the language people write in). A reader's own choice
-// (setLanguage from a page: a language toggle) wins over both.
+// The engine's words are in the language the app is read in (i18n.ts): the reader's own choice (setLanguage from a
+// page: a language toggle), else the app's, its home page's metadata.lang (as this browser last saw it until the pages
+// come, so a reload does not start in another language), else the browser's. So is the page's (<html lang>), except
+// that a page may say its own.
 const LANG_KEY = "pagent.lang";
 const READER = navigator.language || "en";
 let stored: string | null = null;
@@ -227,6 +228,8 @@ export function App() {
   useDocumentTitle(here, pages);
   const [notify, toggleNotify] = useNotifySetting();
   const [railOpen, narrow, setRail] = useRail();
+  const [railWidth, setRailWidth] = useRailWidth();
+  const [settings, setSettings] = useState(false);
   // One page: nothing to move between, so no rail (a new app's home, the bot, until the app grows); unless more can be
   // made (a dynamic page: its "+" is in the rail).
   const hasRail = (pages?.length ?? 0) > 1 || !!nav?.dynamic.length;
@@ -237,8 +240,21 @@ export function App() {
   return (
     <HostContext.Provider value={host}>
       <LoaderContext.Provider value={httpLoader}>
-        <div className="pagent-app" data-rail={showRail ? (narrow ? "over" : "open") : "closed"}>
-          {showRail && <Rail nav={nav!} statuses={statuses} current={here} onPick={narrow ? () => setRail(false) : undefined} />}
+        <div
+          className="pagent-app"
+          data-rail={showRail ? (narrow ? "over" : "open") : "closed"}
+          style={railWidth && !narrow ? ({ "--pagent-rail-width": `${railWidth}px` } as CSSProperties) : undefined}
+        >
+          {showRail && (
+            <Rail
+              nav={nav!}
+              statuses={statuses}
+              current={here}
+              onPick={narrow ? () => setRail(false) : undefined}
+              foot={<SettingsButton label onOpen={() => (narrow && setRail(false), setSettings(true))} />}
+            />
+          )}
+          {showRail && !narrow && <RailEdge width={railWidth} onWidth={setRailWidth} />}
           {showRail && narrow && <div className="pagent-scrim" onClick={() => setRail(false)} />}
           <div className="pagent-content">
             <header className="pagent-top" data-pagent-chrome>
@@ -267,6 +283,8 @@ export function App() {
                   <Icon d={BELL_ICON} />
                 </button>
               )}
+              {/* An app without a rail (one page) has Settings here. */}
+              {nav && !hasRail && <SettingsButton onOpen={() => setSettings(true)} />}
             </header>
             <main className="pagent-main" data-fill={(route && route !== "missing" && route.fill) || undefined}>
               <RouteContext.Provider value={routeInfo}>
@@ -276,6 +294,7 @@ export function App() {
           </div>
         </div>
         <PermissionPrompts pages={pages} />
+        <SettingsDialog open={settings} onClose={() => setSettings(false)} appTitle={pages?.find((p) => p.path === "/")?.title ?? null} />
       </LoaderContext.Provider>
     </HostContext.Provider>
   );

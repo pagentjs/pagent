@@ -39,6 +39,10 @@ if (!existsSync(app)) {
   git("-c", "user.name=pagent", "-c", "user.email=pagent@localhost", "commit", "-q", "-m", "init from example");
   console.log(`created ${app}`);
 }
+// Its npm packages (the studio's editor and diffs), from its lockfile, when they are not there yet.
+if (existsSync(join(app, "package-lock.json")) && !existsSync(join(app, "node_modules"))) {
+  execFileSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: app, stdio: "inherit" });
+}
 
 const port = process.env.PAGENT_PORT ?? "4870";
 const procs = [

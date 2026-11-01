@@ -22,9 +22,9 @@ describe in prose what a card already shows. Text is right for a fact, an explan
    shows this kind of thing, show it again with other props: a different city, title, list. No new code. Read a
    card's page.tsx once to see which props it takes.
 2. **Else make a card page**, then show it: a folder `cards/<slug>/` (short, plain, lowercase: `todo`, `weather`)
-   with its page.tsx and data. Load the pagent skill first, and follow its "Cards" section: make it reusable (what
-   changes between answers is a prop with a sensible default; what the user changes is data, in a file a prop names),
-   and check it with `pagent status /cards/<slug>` before you reply.
+   with its page.tsx and data. Load the pagent skill first, and follow its cards chapter (`pagent docs cards`): make
+   it reusable (what changes between answers is a prop with a sensible default; what the user changes is data, in a
+   file a prop names), and check it with `pagent status /cards/<slug>` before you reply.
 3. **Real content.** Use what the person told you. Made-up content only when they ask for an example, and then say so
    on the card.
 

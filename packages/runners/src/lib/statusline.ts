@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The status line command of an agent's Claude Code TUI (runner:claude-code puts it in its --settings): Claude Code
+// The status line command of an agent's Claude Code TUI (runner:claude puts it in its --settings): Claude Code
 // gives it, on stdin, what it tells no file, the model's context window and the account's rate limits. It keeps those
 // numbers for the runner (lib/claude-usage.ts, <stateDir>/statusline.json), then runs the status line the user had
 // (their command, given here base64-encoded as the second argument) on the same input, and what that prints is the

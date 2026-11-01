@@ -22,11 +22,11 @@ describe("runs a trigger started, delegated", () => {
     return i >= 0 && ls.slice(i + 1).some((l) => l.startsWith("assistant") && reply.test(l));
   };
   const busy = async (node: string) => (await app.get(`/_pagent/agent-status?node=${node}&agent=${node.slice(1)}`)).busy;
-  /** b's permission hook (Claude Code's PermissionRequest), asking now: what it decides. */
+  /** b's harness asking before a tool runs (a permission request, as its runner sends it): what it decides. */
   const permission = (signal: AbortSignal) =>
-    fetch(`${app.url}/_pagent/permission?node=/b&agent=b`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool_name: "Bash", tool_input: { command: "make" } }), signal })
+    fetch(`${app.url}/_pagent/permission?node=/b&agent=b`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "Bash", input: { command: "make" }, meta: { kind: "command", command: "make" } }), signal })
       .then((r) => r.json())
-      .then((r) => r.hookSpecificOutput?.decision);
+      .then((r) => r.decision);
   before(async () => {
     app = await testApp({
       "page.tsx": `export const triggers = { go: { watch: "go.json", run: "go" } };\nexport default function Page() { return <div>home</div>; }\n`,
@@ -43,7 +43,7 @@ describe("runs a trigger started, delegated", () => {
     await until(async () => (await history("/b")).some((l) => l.includes("ask-user may-i")), "a's delegation to b");
     await until(() => busy("/b"), "b's run");
     const decision = await permission(AbortSignal.timeout(5000));
-    assert.equal(decision?.behavior, "deny", "declined at once");
+    assert.equal(decision?.allow, false, "declined at once");
     assert.match(decision.message, /Nobody can answer/);
     await until(() => replied("/b", "ask-user may-i", /Nobody can answer/), "b's ask-user, declined");
     // The result reaches a as a message, with b's line for it: its ask-user there is declined too.

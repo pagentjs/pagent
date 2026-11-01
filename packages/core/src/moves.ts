@@ -18,7 +18,7 @@ import { agentStatus, type AgentRef, type Ctx } from "./agents.ts";
 import { forget } from "./agents/history.ts";
 import { moveConversation } from "./agents/remote.ts";
 import { harnessEnv } from "./shell-env.ts";
-import { invoke, runnerBase, runnerScript } from "./agents/runner.ts";
+import { canDo, invoke, runnerBase, runnerScript } from "./agents/runner.ts";
 import { endSession } from "./agents/thread.ts";
 import { broadcast } from "./events.ts";
 import type { AgentDecl } from "./extract.ts";
@@ -127,6 +127,10 @@ export async function moveNode(ctx: Ctx, fromArg: string, toArg: string): Promis
   for (const a of worked) {
     if (!a.cwd || typeof a.decl.remote === "string") continue;
     const ref = { ...a.ref, node: rename(a.ref.node) };
+    if (!(await canDo(a.decl, "move"))) {
+      sessions.push(`${keyOf(ref)}: its harness does not move sessions (they stay where its folder was)`);
+      continue;
+    }
     const base = runnerBase(ctx, ref, a.decl);
     const said: string[] = [];
     let failed = "";

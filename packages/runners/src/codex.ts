@@ -5,7 +5,7 @@
 // thread), or a pinned agent remembers its thread in stateDir/session.json: one that adopted a thread (seedSession),
 // and one that works in a folder other than its node's (ownSession: others may work there, SPEC 13.9).
 //
-// Same contract as runner:claude-code: one JSON object on the first line of stdin, JSONL on stdout.
+// The runner contract is lib/contract.ts (SPEC 13.18): one JSON object on the first line of stdin, JSONL on stdout.
 //   { op: "service" } → {type:"service", id, command, args, envDrop, cwd}: the app-server the daemon keeps running
 //   { op: "session", cwd, stateDir, env, agentSocket, permissionUrl, pluginDirs, skills?, mcps?, systemPrompt, options }
 //     long-lived (in the daemon): opens the agent's thread with pagent's additions and stays subscribed to it.
@@ -22,31 +22,39 @@
 //     rollout; the session says the same, live, before each turn-end as a data-usage chunk
 //   { op: "move", from, cwd, stateDir } → {type:"moved", sessions}: the agent's folder moved (pagent mv); a folder agent
 //     remembers the thread it had there (moveOp)
-//   { op: "describe" } → {type:"describe", turns: "thread"}: what the core goes by (agents.ts, Capabilities)
-//     It does not say `strangers` (SPEC 13.7): Codex has no turn without tools (its shell is always there; even the
+//   { op: "trajectory", cwd, stateDir, thread? } → {type:"trajectory", records, file, watch}: the thread as a timeline
+//     (lib/trajectory.ts, lib/codex-trajectory.ts), from its rollout and its sub-agents'
+//   { op: "describe" } → {type:"describe", harness, turns: "thread", ops, interject}: what the core goes by
+//     It does not answer `stranger` (SPEC 13.7): Codex has no turn without tools (its shell is always there; even the
 //     read-only sandbox reads the disk), so a Codex agent answers no strangers.
+// Each tool call says what it does (toolMetadata, lib/codex-tools.ts); approvals go to the app as permission requests.
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
-import { request as httpRequest } from "node:http";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { connect as connectUnix } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { UIMessage, UIMessageChunk } from "ai";
 import WebSocket from "ws";
 import { CodexSubagents, isSpawn, spawnPart, toolOf, toolResult, type Item } from "./lib/codex-items.ts";
+import { codexTool } from "./lib/codex-tools.ts";
 import { gitRoot, loadSession, realPath, saveSession } from "./lib/common.ts";
+import type { Describe } from "./lib/contract.ts";
+import { askApp } from "./lib/permission.ts";
+import { annotate, meta, type ToolMeta } from "./lib/tools.ts";
+import { codexTrajectory } from "./lib/codex-trajectory.ts";
 import { CodexUsage } from "./lib/codex-usage.ts";
 import { SubagentStream } from "./lib/subagents.ts";
 
 const env = (k: string) => process.env[`PAGENT_${k}`];
 
 type Input = {
-  op: "service" | "session" | "history" | "info" | "interactive" | "usage" | "describe" | "move";
+  op: "service" | "session" | "history" | "info" | "interactive" | "usage" | "describe" | "move" | "trajectory";
   from?: string; // move: the folder the agent worked in (real path)
   cwd: string;
   stateDir: string;
   thread?: string; // the thread the agent's session has open (history, interactive)
+  endpoint?: string; // the app-server that session is on (interactive)
   addDirs?: string[];
   seedSession?: string; // adopt an existing thread the first time
   ownSession?: boolean; // its cwd is not its node's folder: its thread is its own, never the folder's latest
@@ -60,6 +68,7 @@ type Input = {
   options?: { model?: string; effort?: string; sandbox?: string; approvalPolicy?: string };
 };
 
+const said = annotate(codexTool); // every tool call says what it does
 const out = (
   chunk:
     | UIMessageChunk
@@ -67,9 +76,9 @@ const out = (
     | { type: "info"; sessionId: string | null; resume: string | null }
     | { type: "command"; command: string; args: string[]; cwd: string; trust?: { prompt: string; keys: string[]; harness: string } }
     | { type: "service"; id: string; command: string; args: string[]; envDrop: string[]; cwd: string }
-    | { type: "describe"; turns: "thread" }
+    | Describe
     | Record<string, unknown>,
-) => process.stdout.write(JSON.stringify(chunk) + "\n");
+) => process.stdout.write(JSON.stringify(said(chunk)) + "\n");
 
 /** Exit once what was written to stdout is out (a pipe's writes are asynchronous on macOS). */
 const exit = (code: number) => process.stdout.write("", () => process.exit(code));
@@ -80,13 +89,28 @@ const codexBin = () => process.env.CODEX_BIN ?? "codex";
 
 /**
  * pagent's own app-server for this CODEX_HOME (not Codex's shared daemon): a socket under PAGENT_HOME, or under the
- * temp folder when that path is too long for a unix socket (~104 bytes on macOS).
+ * temp folder when that path is too long for a unix socket (~104 bytes on macOS). One per version of Codex: once Codex
+ * is updated, a new one starts next to the old, which keeps its sessions until they move to the new (the core does
+ * that when they are quiet, and then stops the old one).
  */
 function appServer() {
   const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const id = createHash("sha1").update(codexHome).digest("hex").slice(0, 10);
-  const inHome = join(env("HOME") ?? join(homedir(), ".pagent"), `codex-${id}.sock`);
-  return { id: `codex-app-server:${id}`, socket: inHome.length < 100 ? inHome : join(tmpdir(), `pagent-codex-${id}.sock`) };
+  const version = createHash("sha1").update(installed(codexBin())).digest("hex").slice(0, 6);
+  const inHome = join(env("HOME") ?? join(homedir(), ".pagent"), `codex-${id}-${version}.sock`);
+  return { id: `codex-app-server:${id}:${version}`, socket: inHome.length < 100 ? inHome : join(tmpdir(), `pagent-codex-${id}-${version}.sock`) };
+}
+
+/** Which program a command runs now: its file on PATH through links, and when it was written ("" when not found). */
+function installed(command: string): string {
+  const dirs = command.includes("/") ? [""] : (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  for (const d of dirs) {
+    try {
+      const file = realpathSync(d ? join(d, command) : command);
+      return `${file}\t${Math.round(statSync(file).mtimeMs)}`;
+    } catch {}
+  }
+  return "";
 }
 
 /** A JSON-RPC connection to the app-server: WebSocket frames over its unix socket. */
@@ -116,8 +140,7 @@ class Rpc {
   }
 
   /** Connect, waiting up to `waitMs` for the socket (the daemon may have just started the app-server). */
-  static async open(waitMs: number): Promise<Rpc> {
-    const { socket } = appServer();
+  static async open(waitMs: number, socket = appServer().socket): Promise<Rpc> {
     const deadline = Date.now() + waitMs;
     for (;;) {
       const ws = new WebSocket("ws://localhost/", { createConnection: () => connectUnix(socket), perMessageDeflate: false });
@@ -312,54 +335,65 @@ function readRollout(usage: CodexUsage, path: string | null) {
   }
 }
 
+/**
+ * The last list of steps of each turn (update_plan, which Codex sends as turn/plan/updated and keeps in no item):
+ * stateDir/plans.json, the latest 200 turns, so the history shows them where they were.
+ */
+type PlanArgs = { explanation?: string; plan: unknown[] };
+const plansFile = (stateDir: string) => join(stateDir, "plans.json");
+function plansOf(stateDir: string): Record<string, PlanArgs> {
+  try {
+    return JSON.parse(readFileSync(plansFile(stateDir), "utf8"));
+  } catch {
+    return {};
+  }
+}
+function savePlan(stateDir: string, turnId: string, args: PlanArgs) {
+  try {
+    const all = plansOf(stateDir);
+    delete all[turnId];
+    all[turnId] = args;
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(plansFile(stateDir), JSON.stringify(Object.fromEntries(Object.entries(all).slice(-200))) + "\n");
+  } catch (e) {
+    console.error(`plans.json: ${(e as Error).message}`);
+  }
+}
+
 const userText = (item: Item) => (item.content ?? []).map((c: any) => (c.type === "text" ? c.text : "")).join("");
 
 /**
- * An approval Codex asks for, as the app's permission request (the body Claude Code's PermissionRequest hook sends),
- * and the answer to give it.
+ * An approval Codex asks for, as the app's permission request (lib/contract.ts, PermissionRequest), and the answer to
+ * give it.
  */
-function approval(method: string, p: any, items: Map<string, Item>) {
+function approval(method: string, p: any, items: Map<string, Item>): { tool: string; input: unknown; meta: ToolMeta; detail?: string; answer: (yes: boolean) => unknown } | null {
   const reason = p.reason ? { reason: p.reason } : {};
   if (method === "item/commandExecution/requestApproval") {
-    return { tool: "shell", input: { command: p.command ?? "", ...reason }, answer: (yes: boolean) => ({ decision: yes ? "accept" : "decline" }) };
+    const command = String(p.command ?? "");
+    return { tool: "shell", input: { command, ...reason }, meta: meta("command", { command }), answer: (yes: boolean) => ({ decision: yes ? "accept" : "decline" }) };
   }
   if (method === "item/fileChange/requestApproval") {
-    const paths = (items.get(p.itemId)?.changes ?? []).map((c: any) => c.path).join("\n");
-    return { tool: "apply_patch", input: { file_path: paths || p.grantRoot || "", ...reason }, answer: (yes: boolean) => ({ decision: yes ? "accept" : "decline" }) };
+    const paths: string[] = (items.get(p.itemId)?.changes ?? []).map((c: any) => c.path);
+    const files = paths.length ? paths : p.grantRoot ? [String(p.grantRoot)] : [];
+    return { tool: "apply_patch", input: { changes: files.map((path) => ({ path })), ...reason }, meta: meta("edit", { files }), detail: files.join("\n"), answer: (yes: boolean) => ({ decision: yes ? "accept" : "decline" }) };
   }
   if (method === "item/permissions/requestApproval") {
     const perms = p.permissions ?? {};
     return {
       tool: "more permissions",
       input: { ...reason, ...perms },
+      meta: meta("other"),
       answer: (yes: boolean) => ({ permissions: yes ? { ...(perms.network ? { network: perms.network } : {}), ...(perms.fileSystem ? { fileSystem: perms.fileSystem } : {}) } : {}, scope: "turn" }),
     };
   }
   return null; // anything else (elicitations, user input): the TUI, if one is attached, answers it
 }
 
-/** POST JSON, read the JSON answer. No time limit (fetch gives up after 5 minutes; a person may take longer). */
-function postJson(url: string, body: unknown, signal: AbortSignal): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const req = httpRequest(url, { method: "POST", headers: { "content-type": "application/json" }, signal }, (res) => {
-      let data = "";
-      res.setEncoding("utf8");
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(data || "{}"));
-        } catch (e) {
-          reject(e);
-        }
-      });
-    });
-    req.on("error", reject);
-    req.end(JSON.stringify(body));
-  });
-}
-
 async function sessionOp(input: Input, commands: AsyncIterator<string>) {
-  const rpc = await Rpc.open(20_000);
+  // The app-server of the Codex installed now; its TUI attaches to the same one (ready's endpoint), even once another
+  // version is installed.
+  const { socket } = appServer();
+  const rpc = await Rpc.open(20_000, socket);
   void rpc.closed.then(() => {
     console.error("lost the Codex app-server");
     exit(1);
@@ -381,7 +415,7 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
   // What this turn printed so far, told again to a server that restarted mid-turn.
   let turn = null as { id: string; lines: string[]; last: string } | null;
   const emit = (o: Record<string, unknown>) => {
-    const line = JSON.stringify(o);
+    const line = JSON.stringify(said(o));
     turn?.lines.push(line);
     process.stdout.write(line + "\n");
   };
@@ -389,6 +423,7 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
   const streamed = new Set<string>(); // message / reasoning items that got deltas
   const metas = new Map<string, unknown>(); // run → what the app attached to its message, until the message shows up
   const asking = new Map<number | string, AbortController>(); // approvals waiting for the app's answer
+  let planUpdates = 0; // update_plan calls made up from turn/plan/updated: each its own id
   // Its sub-agents: threads of their own, whose items come on this connection too (lib/codex-items.ts).
   const subs = new CodexSubagents();
   const subStream = new SubagentStream((c) => emit(c as Record<string, unknown>));
@@ -412,7 +447,7 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
     } else return;
     subs.send(subStream, child);
   };
-  out({ type: "ready", threadId });
+  out({ type: "ready", threadId, endpoint: socket });
 
   rpc.onNotification = (method, p) => {
     if (method === "account/rateLimits/updated") return usage.rateLimits(p.rateLimits);
@@ -450,6 +485,7 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
           subs.send(subStream, spawned(item, 0));
           break;
         }
+        if (item.type === "plan") break; // its text comes with item/completed (its deltas are not the plan, the protocol says)
         items.set(item.id, item);
         if (item.type === "agentMessage") emit({ type: "text-start", id: item.id });
         else if (item.type === "reasoning") emit({ type: "reasoning-start", id: item.id });
@@ -458,6 +494,17 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
           emit({ type: "tool-input-start", toolCallId: item.id, toolName: tool.name, dynamic: true });
           emit({ type: "tool-input-available", toolCallId: item.id, toolName: tool.name, input: tool.input, dynamic: true });
         }
+        break;
+      }
+      case "turn/plan/updated": {
+        // Its list of steps (the update_plan tool), which is no item: an "update_plan" call, as the app reads lists of
+        // steps (bridge plan.ts); kept per turn in stateDir/plans.json, for the history (thread/turns/list has no such item).
+        const args = { ...(p.explanation ? { explanation: p.explanation } : {}), plan: p.plan ?? [] };
+        const id = `plan-${p.turnId}-${++planUpdates}`;
+        emit({ type: "tool-input-start", toolCallId: id, toolName: "update_plan", dynamic: true });
+        emit({ type: "tool-input-available", toolCallId: id, toolName: "update_plan", input: args, dynamic: true });
+        emit({ type: "tool-output-available", toolCallId: id, output: "Plan updated", dynamic: true });
+        savePlan(input.stateDir, String(p.turnId), args);
         break;
       }
       case "item/agentMessage/delta":
@@ -526,10 +573,9 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
     if (!ask) return;
     const ctl = new AbortController();
     asking.set(id, ctl);
-    void postJson(input.permissionUrl, { hook_event_name: "PermissionRequest", tool_name: ask.tool, tool_input: ask.input }, ctl.signal)
-      .then((r: any) => {
-        const behavior = r?.hookSpecificOutput?.decision?.behavior;
-        if (behavior) rpc.respond(id, ask.answer(behavior === "allow"));
+    void askApp(input.permissionUrl, { tool: ask.tool, input: ask.input, meta: ask.meta, ...(ask.detail ? { detail: ask.detail } : {}) }, ctl.signal)
+      .then((r) => {
+        if (r.decision) rpc.respond(id, ask.answer(r.decision.allow));
       })
       .catch((e) => ctl.signal.aborted || console.error(`approval ${method}: the app did not answer (${(e as Error).message}); the TUI, if open, still asks`))
       .finally(() => asking.delete(id));
@@ -554,7 +600,7 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
     } else if (c.op === "interrupt") {
       if (turn) rpc.call("turn/interrupt", { threadId, turnId: turn.id }).catch((e: Error) => process.stderr.write(`turn/interrupt: ${e.message}\n`));
     } else if (c.op === "state") {
-      out({ type: "ready", threadId });
+      out({ type: "ready", threadId, endpoint: socket });
       for (const line of turn?.lines ?? []) process.stdout.write(line + "\n");
     } else if (c.op === "stop") break;
   }
@@ -624,6 +670,7 @@ async function historyOp(input: Input) {
   }
 
   const messages: UIMessage[] = [];
+  const plans = plansOf(input.stateDir);
   for (const turn of turns) {
     let assistant: UIMessage | null = null;
     const ensureAssistant = () => {
@@ -660,6 +707,13 @@ async function historyOp(input: Input) {
         );
       }
     }
+    // Its last list of steps, before the reply it ended with (where the work it tracks was).
+    const plan = plans[turn.id];
+    if (plan) {
+      const parts = ensureAssistant().parts;
+      const end = parts.length && parts[parts.length - 1].type === "text" ? parts.length - 1 : parts.length;
+      parts.splice(end, 0, { type: "dynamic-tool", toolName: "update_plan", toolCallId: `plan-${turn.id}`, state: "output-available", input: plan, output: "Plan updated" });
+    }
   }
   out({ type: "history", messages });
   rpc.close();
@@ -694,6 +748,126 @@ async function childHistory(rpc: Rpc, subs: CodexSubagents, child: string) {
   if (last?.completedAt && c.status !== "running") c.endedAt = last.completedAt * 1000;
 }
 
+// ---------------------------------------------------------------- trajectory
+
+/**
+ * The thread as a timeline, from its rollout (where thread/read says it is) and its sub-agents' (threads of their own,
+ * whose rollouts are found by their ids: next to it first). A compressed rollout (an older thread's) is not read.
+ */
+async function trajectoryOp(input: Input) {
+  let path: string | null = null;
+  let threadId: string | null = input.thread ?? null;
+  let rpc: Rpc | null = null;
+  try {
+    rpc = await Rpc.open(3_000);
+    threadId ??= await currentThread(rpc, input);
+    path = threadId ? await pathOf(rpc, threadId) : null;
+  } catch {
+    // Its app-server is not up: the thread the agent keeps, else the folder's latest by the rollouts' own record.
+    threadId ??= pinned(input) ? loadSession(input.stateDir, input.seedSession) : (latestRollout(realPath(input.cwd)) ?? loadSession(input.stateDir));
+  }
+  const rollouts = new Rollouts(input.stateDir);
+  path ??= threadId ? rollouts.find(threadId) : null;
+  if (!path?.endsWith(".jsonl") || !existsSync(path)) {
+    rpc?.close();
+    return out({ type: "trajectory", records: [] });
+  }
+  if (threadId) rollouts.set(threadId, path);
+  const text = readFileSync(path, "utf8");
+  // Its sub-agents' rollouts: next to it, or where they were found before; the rest as the app-server says (thread/read),
+  // and only then by a walk of CODEX_HOME/sessions (once).
+  const read = (deep: boolean) => {
+    const files: string[] = [];
+    const missing: string[] = [];
+    const records = codexTrajectory(text, (child) => {
+      const f = rollouts.find(child, dirname(path!), deep);
+      if (!f) {
+        missing.push(child);
+        return null;
+      }
+      files.push(f);
+      return readFileSync(f, "utf8");
+    });
+    return { records, files, missing };
+  };
+  let r = read(false);
+  if (r.missing.length && rpc) {
+    for (const child of r.missing) {
+      const p = await pathOf(rpc, child);
+      if (p) rollouts.set(child, p);
+    }
+    r = read(false);
+  }
+  rpc?.close();
+  if (r.missing.length) r = read(true);
+  rollouts.save();
+  out({ type: "trajectory", records: r.records, file: path, watch: r.files });
+}
+
+/** A thread's rollout, as the app-server says (thread/read), or null. */
+const pathOf = (rpc: Rpc, threadId: string): Promise<string | null> => rpc.call("thread/read", { threadId }).then((r) => (typeof r?.thread?.path === "string" ? r.thread.path : null), () => null);
+
+/**
+ * Where threads' rollouts are (CODEX_HOME/sessions/<y>/<m>/<d>/rollout-<time>-<id>.jsonl): next to another first, then
+ * where they were found before (stateDir/rollouts.json, id → path), and, deep, by one walk of the whole folder that
+ * notes every rollout in it. A long session's sub-agents cost one walk, not one per sub-agent per read.
+ */
+class Rollouts {
+  private file: string | null;
+  private known: Record<string, string> = {};
+  private changed = false;
+  private walked: Map<string, string> | null = null; // every rollout there, by thread id, once walked
+  constructor(stateDir?: string) {
+    this.file = stateDir ? join(stateDir, "rollouts.json") : null;
+    try {
+      if (this.file) this.known = JSON.parse(readFileSync(this.file, "utf8")) ?? {};
+    } catch {}
+  }
+  find(threadId: string, near?: string, deep = true): string | null {
+    const suffix = `-${threadId}.jsonl`;
+    if (near) {
+      try {
+        const name = readdirSync(near).find((n) => n.endsWith(suffix));
+        if (name) return this.set(threadId, join(near, name));
+      } catch {}
+    }
+    const had = this.known[threadId];
+    if (had && existsSync(had)) return had;
+    if (!deep) return null;
+    if (!this.walked) {
+      this.walked = new Map();
+      const walk = (dir: string) => {
+        let names: string[];
+        try {
+          names = readdirSync(dir);
+        } catch {
+          return;
+        }
+        for (const name of names) {
+          const id = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/.exec(name)?.[1];
+          if (id) (this.walked as Map<string, string>).set(id, join(dir, name));
+          else if (!name.includes(".")) walk(join(dir, name));
+        }
+      };
+      walk(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "sessions"));
+    }
+    const found = this.walked.get(threadId);
+    return found ? this.set(threadId, found) : null;
+  }
+  set(threadId: string, path: string): string {
+    if (this.known[threadId] !== path) (this.known[threadId] = path), (this.changed = true);
+    return path;
+  }
+  /** Kept in the agent's state, the ones its trajectory read (not every rollout the walk saw). */
+  save() {
+    if (!this.file || !this.changed) return;
+    try {
+      mkdirSync(dirname(this.file), { recursive: true });
+      writeFileSync(this.file, JSON.stringify(this.known) + "\n");
+    } catch {}
+  }
+}
+
 // ---------------------------------------------------------------- the TUI, info, the service
 
 /**
@@ -702,7 +876,7 @@ async function childHistory(rpc: Rpc, subs: CodexSubagents, child: string) {
  */
 function interactiveOp(input: Input) {
   if (!input.thread) return out({ type: "error", errorText: "no thread to attach to" });
-  const args = ["--remote", `unix://${appServer().socket}`, "-c", "check_for_update_on_startup=false", "resume", input.thread];
+  const args = ["--remote", `unix://${input.endpoint ?? appServer().socket}`, "-c", "check_for_update_on_startup=false", "resume", input.thread];
   // A resumed thread does not ask to trust its folder; a TUI started in a new folder would (Enter accepts).
   const trust = { prompt: "Trust and continue", keys: ["\r"], harness: "Codex" };
   out({ type: "command", command: codexBin(), args, cwd: real(input.cwd), trust });
@@ -797,5 +971,7 @@ else if (input.op === "info") await infoOp(input);
 else if (input.op === "interactive") interactiveOp(input);
 else if (input.op === "service") serviceOp();
 else if (input.op === "move") await moveOp(input);
-else if (input.op === "describe") out({ type: "describe", turns: "thread" }); // every turn goes to the agent's thread
+else if (input.op === "trajectory") await trajectoryOp(input);
+// Every turn goes to the agent's thread; a message during a turn is steered into it.
+else if (input.op === "describe") out({ type: "describe", harness: { id: "codex", title: "Codex" }, turns: "thread", ops: ["info", "usage", "trajectory", "move", "interactive", "service"], interject: true });
 else out({ type: "error", errorText: `unknown op ${(input as Input).op}` });

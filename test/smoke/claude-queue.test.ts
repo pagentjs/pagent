@@ -1,4 +1,4 @@
-// claude-code: a message typed into the TUI while it is in a turn (how pagent interjects). Claude Code queues it
+// claude: a message typed into the TUI while it is in a turn (how pagent interjects). Claude Code queues it
 // (queue-operation enqueue) and takes it in between two tool calls (remove, with its text; the transcript has it as a
 // queued_command attachment), or, with no tool call left, starts the next turn with it (dequeue, then the user
 // message). The follow op says "taken" for each and goes on to the end of the turn that takes the last one; the history
@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { repo, until } from "../lib/app.ts";
 
-const runner = join(repo, "packages/runners/src/claude-code.ts");
+const runner = join(repo, "packages/runners/src/claude.ts");
 const line = (o: unknown) => JSON.stringify(o) + "\n";
 const user = (content: unknown, n: number) => line({ type: "user", uuid: `u${n}`, message: { role: "user", content } });
 const assistant = (id: string, content: unknown[], n: number) => line({ type: "assistant", uuid: `a${n}`, message: { id, role: "assistant", content } });
@@ -21,7 +21,7 @@ const queue = (operation: string, content?: string) => line({ type: "queue-opera
 const queued = (prompt: string, n: number) => line({ type: "attachment", uuid: `q${n}`, attachment: { type: "queued_command", prompt, commandMode: "prompt", origin: { kind: "human" } } });
 const end = line({ type: "system", subtype: "turn_duration", durationMs: 1000 });
 
-describe("claude-code: a message typed during a turn", () => {
+describe("claude: a message typed during a turn", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-queue-"));
   const cwd = join(dir, "work");
   mkdirSync(cwd);

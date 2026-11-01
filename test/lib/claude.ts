@@ -1,4 +1,4 @@
-// A stand-in for Claude Code, for tests of the engine's claude-code runner: no model, no network, its transcripts where
+// A stand-in for Claude Code, for tests of the engine's claude runner: no model, no network, its transcripts where
 // Claude Code keeps them (an isolated CLAUDE_CONFIG_DIR).
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

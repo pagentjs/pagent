@@ -7,7 +7,7 @@
 // page's instances among them (each a row of its own, a helper under the instance whose agent made it): "+" on a row
 // makes a new page under it, "⋯" on an instance renames or deletes it. A page needs neither its own overview of the
 // app's agents nor its own list of them (SPEC 3.7, 13.12).
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { quietNote, type AgentStatus } from "@pagent/bridge";
 import { labelOf, sayIn, t } from "@pagent/bridge/i18n";
 import { api, clientId, onHostEvent, qs } from "./host.ts";
@@ -204,9 +204,12 @@ function useSeen(current: string, pages: Page[], statuses: Map<string, Glance>):
 /** A row of the rail: a page, or a folder on the way to pages (a label); makes: the new pages that can go under it. */
 type Row = { url: string; depth: number; page?: Page; makes: Dynamic[] };
 
-/** The maker an instance is shown under: the instance whose agent (or trigger) made it, when that one is listed. */
+/**
+ * The maker an instance is shown under: the instance whose agent (or trigger) made it, when that one is listed. Not a
+ * page whose server code made it (nodes.make from a page's action: "/demo"): a person did, there.
+ */
 function makerOf(p: Page, byPath: Map<string, Page>): Page | null {
-  const node = p.createdBy?.replace(/^trigger:/, "").replace(/#.*$/, "");
+  const node = p.createdBy?.includes("#") ? p.createdBy.replace(/^trigger:/, "").replace(/#.*$/, "") : undefined;
   const m = node ? byPath.get(node) : undefined;
   if (!m?.instanceOf || m === p) return null;
   // Not under one of its own helpers (two that made each other, after a rename).
@@ -223,11 +226,18 @@ function makerOf(p: Page, byPath: Map<string, Page>): Page | null {
 function railRows(pages: Page[], dynamic: Dynamic[]): { home: Dynamic[]; rows: Row[] } {
   type T = { seg: string; url: string; page?: Page; makes: Dynamic[]; kids: Map<string, T>; up?: T };
   const top: T = { seg: "", url: "/", makes: [], kids: new Map() };
+  // Each address's node, wherever it is moved: a maker that is itself under its own maker is still found.
+  const known = new Map<string, T>([["/", top]]);
   const at = (url: string): T => {
     let t = top;
     for (const seg of url.split("/").filter(Boolean)) {
-      if (!t.kids.has(seg)) t.kids.set(seg, { seg, url: `${t.url === "/" ? "" : t.url}/${seg}`, makes: [], kids: new Map(), up: t });
-      t = t.kids.get(seg)!;
+      const next = `${t.url === "/" ? "" : t.url}/${seg}`;
+      if (!known.has(next)) {
+        const k: T = { seg, url: next, makes: [], kids: new Map(), up: t };
+        t.kids.set(seg, k);
+        known.set(next, k);
+      }
+      t = known.get(next)!;
     }
     return t;
   };
@@ -330,7 +340,7 @@ function NameInput({ initial, label, indent, onDone, onCancel }: { initial: stri
  * is doing or the question it waits on, the last thing it said, and when it last talked. `current`: the page on screen,
  * as people read its address.
  */
-export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses: Map<string, Glance>; current: string; onPick?: () => void }) {
+export function Rail({ nav, statuses, current, onPick, foot }: { nav: Pages; statuses: Map<string, Glance>; current: string; onPick?: () => void; foot?: ReactNode }) {
   const { pages, dynamic } = nav;
   const root = pages.find((p) => p.path === "/");
   const { home, rows } = useMemo(() => railRows(pages, dynamic), [pages, dynamic]);
@@ -495,7 +505,93 @@ export function Rail({ nav, statuses, current, onPick }: { nav: Pages; statuses:
     <nav className="pagent-rail" aria-label={t("app.pages")} data-pagent-chrome>
       {root && entry({ url: "/", depth: 0, page: root, makes: home }, "pagent-railhome")}
       <div className="pagent-raillist">{rows.map((r) => entry(r))}</div>
+      {/* What is the shell's, not a page's (Settings), at the bottom. */}
+      {foot && <div className="pagent-railfoot">{foot}</div>}
     </nav>
+  );
+}
+
+// The rail's width, as the reader dragged its edge (remembered in this browser); null: the token's
+// (--pagent-rail-width, which an app's look may set). Between RAIL_MIN and RAIL_MAX, and never more than half the window.
+const RAIL_WIDTH = "pagent.rail.width";
+export const RAIL_MIN = 180;
+export const RAIL_MAX = 480;
+const fitted = (w: number) => Math.round(Math.max(RAIL_MIN, Math.min(w, RAIL_MAX, innerWidth / 2)));
+
+export function useRailWidth(): [number | null, (width: number | null) => void] {
+  const [width, setWidth] = useState<number | null>(() => {
+    try {
+      const w = Number(localStorage.getItem(RAIL_WIDTH));
+      return w > 0 ? fitted(w) : null;
+    } catch {
+      return null;
+    }
+  });
+  const set = (next: number | null) => {
+    const w = next === null ? null : fitted(next);
+    setWidth(w);
+    try {
+      w === null ? localStorage.removeItem(RAIL_WIDTH) : localStorage.setItem(RAIL_WIDTH, String(w));
+    } catch {}
+  };
+  return [width, set];
+}
+
+/**
+ * The rail's right edge, to drag: wider or narrower, live; double-click: its usual width again. The arrow keys move it
+ * too, once it has focus (Home, End: its narrowest, its widest). Only beside the rail, not over the page (on a phone
+ * the rail is a drawer, without one). `width`: as the reader set it (useRailWidth). While it is dragged, only the
+ * rail's width token moves (on .pagent-app, nothing renders again); it is kept when the pointer lets go.
+ */
+export function RailEdge({ width, onWidth }: { width: number | null; onWidth: (width: number | null) => void }) {
+  const railWidth = () => document.querySelector(".pagent-rail")?.getBoundingClientRect().width ?? 248;
+  // Its width now, for assistive technology (the token's when the reader set none): measured once the rail is laid out.
+  const [now, setNow] = useState<number | null>(width);
+  useLayoutEffect(() => setNow(Math.round(railWidth())), [width]);
+  return (
+    <div
+      className="pagent-railedge"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={t("rail.resize")}
+      aria-valuemin={RAIL_MIN}
+      aria-valuemax={Math.round(Math.min(RAIL_MAX, innerWidth / 2))}
+      aria-valuenow={now ?? undefined}
+      title={t("rail.resize")}
+      tabIndex={0}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const edge = e.currentTarget;
+        const app = edge.closest<HTMLElement>(".pagent-app");
+        const from = e.clientX - railWidth();
+        let moved: number | null = null;
+        edge.setPointerCapture(e.pointerId);
+        document.documentElement.dataset.resizing = "";
+        const drag = new AbortController();
+        const done = () => {
+          drag.abort();
+          delete document.documentElement.dataset.resizing;
+          if (moved !== null) onWidth(moved);
+        };
+        edge.addEventListener(
+          "pointermove",
+          (m: PointerEvent) => {
+            moved = fitted(m.clientX - from);
+            app?.style.setProperty("--pagent-rail-width", `${moved}px`);
+            edge.setAttribute("aria-valuenow", String(moved));
+          },
+          { signal: drag.signal },
+        );
+        edge.addEventListener("pointerup", done, { signal: drag.signal });
+        edge.addEventListener("pointercancel", done, { signal: drag.signal });
+      }}
+      onDoubleClick={() => onWidth(null)}
+      onKeyDown={(e) => {
+        const to = e.key === "ArrowLeft" ? railWidth() - 16 : e.key === "ArrowRight" ? railWidth() + 16 : e.key === "Home" ? RAIL_MIN : e.key === "End" ? RAIL_MAX : null;
+        if (to !== null) (e.preventDefault(), onWidth(to));
+      }}
+    />
   );
 }
 
@@ -520,13 +616,18 @@ export function Crumbs({ path, pages }: { path: string; pages: Page[] | null }) 
   );
 }
 
-/** The browser tab says where you are: "Health · Home". `path`: as people read it. */
+/** The browser tab says where you are: "Health · Home", and a home screen's icon added here opens here. `path`: as
+ *  people read it. */
 export function useDocumentTitle(path: string, pages: Page[] | null) {
   useEffect(() => {
     if (!pages) return;
     const here = pages.find((p) => p.url === path)?.title;
     const home = pages.find((p) => p.path === "/")?.title ?? "pagent";
     document.title = here && path !== "/" ? `${here} · ${home}` : here ?? home;
+    // Added to a home screen from here, the app opens here (index.html).
+    const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    const key = (window as { __PAGENT_KEY__?: string }).__PAGENT_KEY__;
+    if (manifest) manifest.href = `/_pagent/manifest.webmanifest?start=${encodeURIComponent(location.pathname)}${key ? `&token=${key}` : ""}`;
   }, [path, pages]);
 }
 

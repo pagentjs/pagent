@@ -9,7 +9,7 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { appId } from "../../packages/core/src/daemon-protocol.ts";
-import { localAddresses } from "../../packages/core/src/remote.ts";
+import { cookieName, localAddresses } from "../../packages/core/src/remote.ts";
 import { fakePage, testApp, type TestApp } from "../lib/app.ts";
 
 /** Sec-Fetch-* as a browser sends them: for an <img>, a page's own fetch, a link followed. */
@@ -69,7 +69,7 @@ describe("GETs from another port of this machine", () => {
   });
 
   test("a device with the token: its own pages are as before, an <img> elsewhere is not", { skip: !lan && "no LAN address" }, async () => {
-    const cookie = `pagent_token=${readFileSync(join(app.home, "state", appId(app.root), "owner-key"), "utf8").trim()}`;
+    const cookie = `${cookieName(app.root)}=${readFileSync(join(app.home, "state", appId(app.root), "owner-key"), "utf8").trim()}`;
     const base = `http://${lan}:${new URL(app.url).port}`;
     assert.equal(await get(`${base}/_pagent/pages`, { cookie, ...fetched("same-origin") }), 200);
     assert.equal(await get(`${base}/_pagent/pages`, { cookie, ...img("same-site") }), 403);

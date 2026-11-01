@@ -1,5 +1,6 @@
 // A node's declarations (export const agents, tools, triggers, config, metadata), its imports of other
 // nodes and the edits the compiler applies, read from its code without running it; and the manifest of several files.
+import { engine } from "../engine.ts";
 import { instanceDir, MAX_FOLDER_NAME } from "../tree.ts";
 import { lineOf, parseModule, type Node } from "./ast.ts";
 import { cronFields, everyMs } from "./schedule.ts";
@@ -87,22 +88,24 @@ type Edit = { pos: number; end?: number; text: string }; // insert at pos, or re
 
 class NotStatic extends Error {}
 
-const CLI_RUNNERS: Record<string, string> = { claude: "claude-code", codex: "codex" };
-
 // A permission rule of the harness, as it writes them: a tool, maybe with what it applies to ("WebFetch",
 // "Bash(curl:*)", "mcp__github__create_issue"). pagent's own MCP tools (mcp__app__…, mcp__node__…) are gone.
 const ALLOW_RULE = /^(?:[A-Z][A-Za-z0-9]*|mcp__(?!app__|node__|app$|node$)[\w-]+)(?:\(.*\))?$/s;
 
 /**
  * An agent as `export const agents = { <name>: { … } }` declares it.
- * cli="claude" | "codex" picks the runner; sessionId adopts an existing native session (kept as `session`); strangers:
+ * cli names its harness, which is the name of one of the engine's runners ("claude", "codex", "opencode" …: each
+ * describes its harness, SPEC 13.18); without one (nor a runner), the person's default harness does, which the node's
+ * declarations fill in (runner "": Nodes.declarations, settings.ts); sessionId adopts an existing native session (kept as `session`); strangers:
  * the cap on a stranger's one-off answer (output tokens), or false: it answers none (agents/stranger.ts). The other
  * fields are the runner's options, passed on as they are.
  */
 function normalizeAgent(decl: Record<string, unknown>, name: string): AgentDecl | string {
   if (decl.remote !== undefined) return remoteAgent(decl, name);
-  const runner = (decl.runner as string | undefined) ?? CLI_RUNNERS[String(decl.cli ?? "")];
-  if (!runner) return `agent "${name}" needs cli="claude" | "codex" (or a runner)`;
+  const harnesses = engine.runners();
+  const cli = decl.cli === undefined ? undefined : String(decl.cli);
+  if (cli !== undefined && !harnesses.includes(cli)) return `agent "${name}": cli is the harness, one of ${harnesses.map((h) => `"${h}"`).join(", ")} (or leave it out: the person's default harness)`;
+  const runner = (decl.runner as string | undefined) ?? cli ?? "";
   if (decl.kind !== undefined) return `agent "${name}": kind is gone: every agent is the same kind of thing, and how it answers follows how each message reached it`;
   if (decl.session !== undefined) return `agent "${name}": the session to adopt is sessionId`;
   const allow = decl.allow;
@@ -452,7 +455,7 @@ export function analyze(
         try {
           meta = literal(d.init);
         } catch {
-          fail(d, `export const metadata must be a static literal ({ title: "…" }): navigation reads it without running the page`);
+          fail(d, `export const metadata must be a static literal ({ title: "…" }): navigation reads it without running the page (\`pagent docs pages#metadata\`)`);
           continue;
         }
         const title = (meta as { title?: unknown } | null)?.title;
@@ -481,7 +484,7 @@ export function analyze(
       try {
         value = literal(d.init) as Record<string, unknown>;
       } catch {
-        fail(d, `export const ${which} must be a static literal`);
+        fail(d, `export const ${which} must be a static literal: the server reads it without running your code (\`pagent docs skill#exports\`)`);
         continue;
       }
       if (which === "config") result.config = value;
@@ -657,7 +660,7 @@ export function mergeManifest(parts: Extracted[]): Extracted {
   const remote = m.agents.find((a) => a.remote !== undefined);
   if (remote && m.agents.length > 1) m.errors.push(`agent "${remote.name}" is a remote agent, so it is its node's only agent (its node's message route is where the other app reaches it): declare the others in another node`);
   for (const t of m.triggers) {
-    if (!m.actions.some((a) => a.name === t.run)) m.errors.push(`trigger "${t.name}" runs "${t.run}", which is not an action of this node (an exported function of one of its "use server" files)`);
+    if (!m.actions.some((a) => a.name === t.run)) m.errors.push(`trigger "${t.name}" runs "${t.run}", which is not an action of this node (an exported function of one of its "use server" files; \`pagent docs triggers\`)`);
     if (t.app && typeof m.config?.app !== "string") m.errors.push(`trigger "${t.name}" watches the app, but this node is not a bridge (its config names no app)`);
     if (typeof t.turn === "string" && m.agents.length && !m.agents.some((a) => a.name === t.turn))
       m.errors.push(`trigger "${t.name}" follows the turns of "${t.turn}", which is not an agent of this node (${m.agents.map((a) => a.name).join(", ")})`);

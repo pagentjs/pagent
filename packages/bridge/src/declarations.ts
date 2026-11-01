@@ -7,9 +7,16 @@
  *   export const agents = { ops: { cli: "claude", cwd: "/srv/ops", sessionId: "…" } } satisfies Agents;
  */
 export type AgentSpec = {
-  /** Which harness runs it. */
-  cli?: "claude" | "codex";
-  /** Or a runner by name (advanced). */
+  /**
+   * Which harness runs it: one of the engine's runners, by name. "claude" (Claude Code), "codex" (Codex), "opencode",
+   * "gemini" (Gemini CLI), "qwen" (Qwen Code), "grokbot" (a Grok Bot bot: `bot`); the person's Settings list the ones
+   * there are. What each can do (a terminal, a timeline …) its runner says: useAgentStatus().session.can.
+   */
+  cli?: string;
+  /**
+   * Or a runner by name (advanced), or a runner script of the app's own by its path: "~/_runners/cli.ts" from the app's
+   * root, "./x.ts" beside the code that declares it, or absolute (a relative one keeps working when the app moves).
+   */
   runner?: string;
   /**
    * A file in the node's folder with this agent's own instructions, added to its system prompt: what it is for and
@@ -18,14 +25,19 @@ export type AgentSpec = {
   instructions?: string;
   /** Adopt an existing native session (one started in a terminal). */
   sessionId?: string;
-  /** Run the harness in this folder (e.g. where an adopted session lives). Defaults to the node's folder. */
+  /**
+   * Run the harness in this folder (e.g. where an adopted session lives). Defaults to the node's folder. Absolute, or
+   * relative: "~/…" from the app's root (as in imports), anything else from the node's folder ("~/../agents/ops": a folder
+   * beside the app, which keeps working when the app and its folders move together).
+   */
   cwd?: string;
   model?: string;
   effort?: string; // reasoning effort (codex)
   permissionMode?: string;
   /**
    * What its harness lets it do without asking: the harness's own permission rules, as they are (Claude Code:
-   * "WebFetch", "Bash(curl:*)"). Codex has no such rules (nothing to map them to): what runs in its sandbox needs no
+   * "WebFetch", "Bash(curl:*)"; opencode's runner reads the same: Bash(x:*) is its command pattern "x*", WebFetch its
+   * webfetch). Codex has no such rules (nothing to map them to): what runs in its sandbox needs no
    * approval, and what goes beyond asks, as a card. `pagent` commands need no rule: they are pre-approved. Declare what
    * its job needs, above all for an agent that runs unattended (from a trigger, where nobody can answer).
    */
@@ -67,6 +79,22 @@ export type AgentSpec = {
    * (default 400). false: it answers no strangers. Codex has no such turn, so a Codex agent answers none.
    */
   strangers?: number | false;
+  /**
+   * cli "grokbot": the Grok Bot bot this agent is, by name or id (`gbot bots list`); createBot: true makes it when there
+   * is none. quietSeconds: how long the bot says nothing more before its turn counts as answered (default 20; Grok
+   * Bot's thread does not say a request is done); waitMinutes: the longest a turn waits for it (default 30).
+   */
+  bot?: string;
+  createBot?: boolean;
+  quietSeconds?: number;
+  waitMinutes?: number;
+  /**
+   * A harness that acts on its own (a Grok Bot's schedules: "every morning, the X digest"): how often its runner looks
+   * for what it said outside a turn ("10m", "1h"; at least a minute), which reaches its conversation and its turn
+   * triggers (TurnEvent phase "message"); its session then runs as long as the app does. Not declared: it is looked
+   * at only around its turns (and when its console opens). Each look may wake a Grok Bot's cloud computer.
+   */
+  follow?: string;
   remote?: never;
   key?: never;
 };
@@ -101,7 +129,8 @@ export type Params = Record<string, string | string[]>;
 
 /**
  * The app acting on its own: when (cron / every "10s" / watch a data file, this node's or another's by its path,
- * "~/worker/tasks.json" / app: a bridge's app changed / turn: a turn of one of its agents starts and ends) + an action
+ * "~/worker/tasks.json" / app: a bridge's app changed / turn: a turn of one of its agents starts and ends, or it says
+ * something outside a turn) + an action
  * of the node to run. The action does the rest, and wakes an agent itself when one should: tell("/node#agent", "…")
  * from "pagent/server" (its run is unattended). To test a trigger, `pagent run` its action.
  *   export const triggers = { digest: { cron: "0 8 * * *", run: "digest" } } satisfies Triggers;
@@ -118,8 +147,12 @@ export type Triggers = Record<string, { cron?: string; every?: string; watch?: s
  * the turn (turnFooter); agent: whose; message: what it was asked, as given (without "(from …)"); from: who asked (""
  * a person in a conversation; else as "(from …)" says: "/node#agent", "trigger:/node#name", a page's path, a URL);
  * reply: at the end, the final text of its reply.
+ * phase "message": the agent said something outside any turn (a harness that acts on its own: a Grok Bot's scheduled
+ * report, a reply after its turn ended, its answer to someone who wrote to it in Grok Bot's own app). reply: what it
+ * said. When it answers a message: that message, its from, and (the app sent it) its turn's runId and messageId. On
+ * its own: runId "", message "", messageId its words' own id, from the agent itself ("/node#agent").
  */
-export type TurnEvent = { phase: "start" | "end"; runId: string; messageId: string; agent: string; message: string; from: string; reply?: string };
+export type TurnEvent = { phase: "start" | "end" | "message"; runId: string; messageId: string; agent: string; message: string; from: string; reply?: string };
 
 /**
  * Tools the page itself implements with useTool: they run in the user's open page. Agents run them with

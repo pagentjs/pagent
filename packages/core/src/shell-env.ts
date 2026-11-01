@@ -150,15 +150,27 @@ export async function harnessEnv(): Promise<Env> {
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
+ * What an interactive shell's rc files would ask before anything runs, in a terminal nobody watches, turned off for the
+ * shell pagent starts the agent's TUI through (and gone again before the CLI starts, unless the user set it): Oh My Zsh,
+ * when its update is due (every 13 days, `update mode` "prompt", its default), asks "[oh-my-zsh] Would you like to
+ * update? [Y/n]" and waits for a key: the TUI never came up, and the agent ran headless until someone answered it in
+ * some terminal (an app's main agent, 2026-10-17). A zstyle ':omz:update' mode the user set wins over this.
+ */
+const RC_QUIET: Env = { DISABLE_AUTO_UPDATE: "true" };
+
+/**
  * A command line run through the user's login shell, interactive, the way they would type it: a shell function or an
  * alias named like the CLI (a wrapper that sets something first) applies. `binDir` goes first on PATH again after the
- * rc files ran (they may put theirs in front): the agent's `pagent` must be this engine's.
+ * rc files ran (they may put theirs in front): the agent's `pagent` must be this engine's. `env`: what to add to the
+ * shell's environment (RC_QUIET, where the user has not set it).
  */
-export function throughShell(cmd: { command: string; args: string[] }, env: Env, binDir?: string): { command: string; args: string[] } {
+export function throughShell(cmd: { command: string; args: string[] }, env: Env, binDir?: string): { command: string; args: string[]; env: Env } {
   const shell = env.SHELL || userShell() || "/bin/sh";
   const word = /^[A-Za-z0-9_.\/+-]+$/.test(cmd.command) ? cmd.command : q(cmd.command); // a bare word, so aliases expand
   const line = [word, ...cmd.args.map(q)].join(" ");
   const fish = basename(shell) === "fish";
   const path = binDir ? (fish ? `set -gx PATH ${q(binDir)} $PATH; ` : `PATH=${q(binDir)}:"$PATH"; export PATH; `) : "";
-  return { command: shell, args: ["-l", "-i", "-c", path + line] };
+  const quiet = Object.keys(RC_QUIET).filter((k) => env[k] === undefined);
+  const unset = quiet.map((k) => (fish ? `set -e ${k}; ` : `unset ${k}; `)).join("");
+  return { command: shell, args: ["-l", "-i", "-c", path + unset + line], env: Object.fromEntries(quiet.map((k) => [k, RC_QUIET[k]])) };
 }

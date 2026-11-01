@@ -10,7 +10,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { appId } from "../../packages/core/src/daemon-protocol.ts";
-import { localAddresses } from "../../packages/core/src/remote.ts";
+import { cookieName, localAddresses } from "../../packages/core/src/remote.ts";
 import { fakePage, freePort, keyFor, lines, strangerAnswer, testApp, until, type TestApp } from "../lib/app.ts";
 
 const history = (app: TestApp, node: string, agent = "bot") => app.get(`/_pagent/history?node=${encodeURIComponent(node)}&agent=${agent}`).then((r) => r.messages as any[]);
@@ -345,7 +345,7 @@ describe("the app's public face on the network", () => {
     const port = new URL(app.url).port;
     const token = readFileSync(join(app.home, "state", appId(app.root), "owner-key"), "utf8").trim();
     const stop = (origin: string, type = "application/json") =>
-      fetch(`http://${lan}:${port}/_pagent/stop`, { method: "POST", headers: { cookie: `pagent_token=${token}`, origin, "content-type": type }, body: JSON.stringify({ node: "/", agent: "bot" }) }).then((r) => r.status);
+      fetch(`http://${lan}:${port}/_pagent/stop`, { method: "POST", headers: { cookie: `${cookieName(app.root)}=${token}`, origin, "content-type": type }, body: JSON.stringify({ node: "/", agent: "bot" }) }).then((r) => r.status);
     assert.equal(await stop(`http://${lan}:${port}`), 200);
     assert.equal(await stop(`http://${lan}:${Number(port) + 1}`), 403);
     assert.equal(await stop(`http://${lan}:${port}`, "text/plain"), 415);
@@ -366,7 +366,7 @@ describe("the app's public face on the network", () => {
     assert.equal(await send("/_pagent/stop", {}, "POST"), 401);
     assert.equal(await send("/_pagent/pages"), 401);
     assert.equal(await send("/api/hello"), 200, "the public face, as for any device");
-    assert.equal(await send("/_pagent/stop", { cookie: `pagent_token=${token}` }, "POST"), 200, "with the token");
+    assert.equal(await send("/_pagent/stop", { cookie: `${cookieName(app.root)}=${token}` }, "POST"), 200, "with the token");
     assert.equal(await fetch(`${app.url}/_pagent/pages`).then((r) => r.status), 200, "by 127.0.0.1: no token");
   });
 });

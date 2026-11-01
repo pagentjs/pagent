@@ -1,9 +1,10 @@
 // node scripts/check.ts: compile every node pagent ships, the way the engine does, and fail on any error. The examples
-// (each copied into a scratch app), the official bridges and the new-bridge skeleton (installed into one), and the app
-// `npm create pagent` makes. Pages and layouts compile as the shell loads them (with the app's shared modules);
+// (each copied into a scratch app), the official bridges and the new-bridge skeleton (installed into one), the app
+// `npm create pagent` makes, and the engine skill's examples. Pages and layouts compile as the shell loads them (with
+// the app's shared modules);
 // "use server" files bundle as their actions run. Nothing is started.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,7 +22,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 function app(name: string, from?: string): string {
   const root = join(scratch, name);
   if (from !== root) from ? cpSync(from, root, { recursive: true }) : mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, "package.json"), JSON.stringify({ name, private: true, type: "module" }) + "\n");
+  if (!existsSync(join(root, "package.json"))) writeFileSync(join(root, "package.json"), JSON.stringify({ name, private: true, type: "module" }) + "\n");
   git(root, "init", "-q", "-b", "main");
   git(root, "add", "-A");
   git(root, "-c", "user.name=check", "-c", "user.email=check@localhost", "commit", "-q", "--allow-empty", "-m", "init");
@@ -36,7 +37,13 @@ const apps: Record<string, string> = {};
 // The examples are not in every checkout (the public repo has none).
 for (const name of existsSync(join(repo, "examples")) ? readdirSync(join(repo, "examples")) : []) {
   const root = join(scratch, name);
-  cpSync(join(repo, "examples", name), root, { recursive: true });
+  const example = join(repo, "examples", name);
+  cpSync(example, root, { recursive: true, filter: (f) => !f.includes("/node_modules") });
+  // Its npm packages (the studio's editor and diffs), as `pagent package add` installed them: from its lockfile, once.
+  if (existsSync(join(example, "package-lock.json"))) {
+    if (!existsSync(join(example, "node_modules"))) execFileSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: example, stdio: "inherit" });
+    symlinkSync(join(example, "node_modules"), join(root, "node_modules"), "dir");
+  }
   // An example that uses an official bridge (import … from "~/wechat/actions") expects it installed (`pagent add`).
   const code = sources(root).join("\n");
   for (const b of official) if (code.includes(`"~/${b}/`) || code.includes(`"~/${b}"`)) cpSync(join(repo, "bridges", b), join(root, b), { recursive: true });
@@ -57,6 +64,57 @@ apps["create-pagent"] = created;
 const createdZh = join(scratch, "created-zh");
 execFileSync(process.execPath, [join(repo, "packages/create-pagent/index.js"), createdZh, "--lang", "zh-CN"], { stdio: "ignore" });
 apps["create-pagent --lang zh-CN"] = createdZh;
+
+// The engine skill's examples (SKILL.md and its chapters, SPEC 13.19), one scratch app per doc: a ts / tsx / js block
+// whose first line is a path comment (// inbox/page.tsx) is that file, and more path comments in it start more files.
+// A block that is no whole file says so in its info string (```tsx fragment). A ~/ node a file imports that no block
+// writes is a stub: a page (and its hooks), or a "use server" file with the functions imported from it.
+const skill = join(repo, "skill/skills/pagent");
+let unmarked = 0;
+for (const doc of ["SKILL.md", ...readdirSync(join(skill, "references")).map((f) => `references/${f}`)]) {
+  const files: Record<string, string> = {};
+  for (const [, lang, rest, body] of readFileSync(join(skill, doc), "utf8").matchAll(/^```(\w+)([^\n]*)\n([\s\S]*?)^```$/gm)) {
+    const info = lang + rest;
+    if (!/^(tsx?|jsx?)\b/.test(info) || /\bfragment\b/.test(info)) continue;
+    const pathOf = (line: string) => /^\/\/ ([\w.\-[\]/]+\.(?:tsx?|jsx?))$/.exec(line)?.[1];
+    if (!pathOf(body.split("\n")[0])) {
+      console.error(`✗ ${doc}: a \`\`\`${info} block with no path comment on its first line; mark it \`\`\`${info.split(" ")[0]} fragment if it is no whole file`);
+      unmarked++;
+      continue;
+    }
+    let file = "";
+    for (const line of body.split("\n")) {
+      const path = pathOf(line);
+      if (path) files[(file = path)] = "";
+      else files[file] += line + "\n";
+    }
+  }
+  if (!Object.keys(files).length) continue;
+  for (const code of Object.values(files)) {
+    for (const [, names, source] of code.matchAll(/^import\s+(.+?)\s+from\s+"~\/([^"]+)"/gm)) {
+      const named = /\{([^}]*)\}/.exec(names)?.[1].split(",").map((n) => n.trim().replace(/^type\s+/, "")).filter(Boolean) ?? [];
+      const hooks = named.filter((n) => /^use[A-Z]/.test(n));
+      const served = named.filter((n) => !/^use[A-Z]/.test(n));
+      const page = `${source}/page.tsx`;
+      if (served.length && !Object.keys(files).some((f) => f.replace(/\.(tsx?|jsx?)$/, "") === source)) {
+        files[`${source}.ts`] = `"use server";\n${served.map((n) => `export async function ${n}(input?: unknown) { return input; }`).join("\n")}\n`;
+      } else if (!served.length && !files[page]) {
+        files[page] = `export default function Stub() { return null; }\n${hooks.map((h) => `export function ${h}() { return null; }`).join("\n")}\n`;
+      }
+    }
+  }
+  // A folder with code but no page (a bridge's actions.ts alone) is a node all the same: its page left out of the doc.
+  for (const rel of Object.keys(files).filter((f) => !f.startsWith("api/") && f.includes("/"))) {
+    const page = rel.slice(0, rel.lastIndexOf("/")) + "/page.tsx";
+    files[page] ??= "export default function Stub() { return null; }\n";
+  }
+  const root = join(scratch, `docs-${doc.replace(/\W/g, "-")}`);
+  for (const [rel, code] of Object.entries(files)) {
+    mkdirSync(join(root, rel, ".."), { recursive: true });
+    writeFileSync(join(root, rel), code);
+  }
+  apps[`skill ${doc}`] = app(`docs-${doc.replace(/\W/g, "-")}`, root);
+}
 
 /**
  * The dynamic pages ([x] and [...x] folders) no made instance of the app covers, each as a made-up instance ("check"
@@ -127,4 +185,4 @@ for (const [label, root] of Object.entries(apps)) {
 
 rmSync(scratch, { recursive: true, force: true });
 console.log(`\n${compiled} compiled; ${failed ? `${failed} node${failed > 1 ? "s" : ""} with errors` : "no errors"}`);
-process.exit(failed ? 1 : 0);
+process.exit(failed || unmarked ? 1 : 0);

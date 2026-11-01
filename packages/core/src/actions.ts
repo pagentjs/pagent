@@ -104,7 +104,9 @@ const mtimeOf = (f: string) => {
     return -1;
   }
 };
-const fresh = (b: Bundle) => b.inputs.every(([f, mtime]) => mtimeOf(f) === mtime) && b.probes.every(([d, l]) => moduleListing(d) === l);
+// Its file is in the temp folder, which the system empties of files nobody touched for a few days (macOS: three): gone,
+// it is built again (until 11-01 a server up that long failed every call of such a function, "Cannot find module").
+const fresh = (b: Bundle) => existsSync(b.file) && b.inputs.every(([f, mtime]) => mtimeOf(f) === mtime) && b.probes.every(([d, l]) => moduleListing(d) === l);
 
 // What the engine offers server code: `import { ax } from "pagent/server"` (server-api.ts). It stays outside the bundle,
 // loaded from the engine itself, so it finds its own files (ax.swift) and an engine update needs no rebuild of the function.

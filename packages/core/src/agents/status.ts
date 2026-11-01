@@ -5,10 +5,11 @@ import { pendingFor } from "../questions.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { isBusy, terminalOf, terminalStatus } from "../terminal.ts";
 import { keptHistory } from "./history.ts";
-import { offlineOf } from "./remote.ts";
-import { declOf } from "./runner.ts";
-import { active, activeRun, sessions, usages } from "./runs.ts";
+import { isRemoteDecl, offlineOf } from "./remote.ts";
+import { capabilitiesOf, declOf } from "./runner.ts";
+import { active, activeRun, queuedOf, sessions, usages } from "./runs.ts";
 import { onThread } from "./thread.ts";
+import { headlessOf } from "./tui.ts";
 import type { Ctx, Run, SessionInfo } from "./types.ts";
 
 /** In a turn and quiet this long (no step, no new state of its TUI), an agent may be stuck: a call that never returns. */
@@ -19,7 +20,9 @@ export const STUCK = 15 * 60_000;
  * its turn started; quietSince: when the last sign of it came (a step of its run, a new state of its TUI); stuck: in a
  * turn and quiet for STUCK; interject: busy, and a message sent with interject goes into its turn in progress (its
  * TUI is in one, or it is on a shared thread), not after it. offline: a remote agent the other app does not answer for
- * (why), shown as a session that died.
+ * (why), shown as a session that died. headless: an agent whose turns go into its TUI runs them headless for now, as
+ * that TUI did not come up (why, and when it is tried again): no message goes into its turn in progress meanwhile.
+ * queued: the messages waiting for its turn, oldest first (runs.ts, queuedOf), which a person may withdraw.
  */
 export function agentStatus(ref: AgentRef) {
   const run = activeRun(ref);
@@ -40,9 +43,11 @@ export function agentStatus(ref: AgentRef) {
     stuck: busy && Date.now() - quietSince > STUCK,
     interject: busy && (isBusy(terminal.state) || onThread(ref)),
     questions: pendingFor(ref),
+    queued: queuedOf(ref),
     session: { slashCommands, model, ...(usage !== undefined ? { usage } : {}) },
     terminal,
     offline: offlineOf(ref),
+    headless: headlessOf(ref),
   };
 }
 
@@ -54,11 +59,13 @@ function nowOf(ref: AgentRef, run: Run | undefined, terminal: ReturnType<typeof 
   const termBusy = isBusy(terminal.state);
   // A prompt in its terminal is what it waits on, whatever its run was doing.
   if (terminal.state === "blocked") {
+    // A dialog's own first line says more than its TUI's "dialog open".
+    const what = terminal.dialog ?? terminal.msg;
     return {
-      line: terminal.msg ? `waiting in its terminal: ${terminal.msg}` : `waiting in its terminal${terminal.kind ? ` (${terminal.kind})` : ""}`,
+      line: what ? `waiting in its terminal: ${what}` : `waiting in its terminal${terminal.kind ? ` (${terminal.kind})` : ""}`,
       doing: {
         ...(terminal.kind === "permission" ? said("Asking for permission in its terminal", "doing.terminalPermission") : said("Waiting in its terminal", "doing.terminalWaiting")),
-        ...(terminal.msg || terminal.kind ? { detail: terminal.msg ?? terminal.kind } : {}),
+        ...(what || terminal.kind ? { detail: what ?? terminal.kind } : {}),
       },
     };
   }
@@ -183,13 +190,26 @@ export function subagentActivity(s: SubagentLine, step?: any): string {
   return `sub-agent: ${s.type}${doing ? ` — ${doing}` : ""}`;
 }
 
-/** "Bash pnpm test", "Edit page.tsx": a tool call as one short line (its most telling argument, once it is known). */
-export function toolActivity(c: { toolName: string; input?: unknown }): string {
-  const name = c.toolName.replace(/^mcp__/, "");
+/**
+ * What a tool call does, as its runner says it (runners/src/lib/tools.ts, ToolMeta: every runner puts it on each call,
+ * whatever its harness names the tool); a call without one is "other".
+ */
+export type ToolMeta = { kind: string; command?: string; files?: string[]; url?: string; query?: string; server?: string };
+const metaOf = (c: { toolMetadata?: unknown }): ToolMeta => (c.toolMetadata && typeof (c.toolMetadata as ToolMeta).kind === "string" ? (c.toolMetadata as ToolMeta) : { kind: "other" });
+
+/** A call's most telling argument, as its meta says it (else a description or prompt the input has). */
+function argOf(c: { input?: unknown; toolMetadata?: unknown }): string {
+  const m = metaOf(c);
   const o = c.input && typeof c.input === "object" ? (c.input as Record<string, unknown>) : {};
-  const path = o.file_path ?? o.path ?? o.notebook_path;
-  const arg = typeof path === "string" ? basename(path) : o.command ?? o.description ?? o.pattern ?? o.query ?? o.url ?? o.skill ?? o.prompt;
-  const line = typeof arg === "string" ? arg.trim().split("\n")[0] : "";
+  const files = m.files ?? [];
+  const arg = m.command ?? (files.length ? files.map((f) => basename(f)).join(", ") : undefined) ?? m.query ?? m.url ?? o.description ?? o.pattern ?? o.query ?? o.url ?? o.skill ?? o.prompt;
+  return typeof arg === "string" ? arg.trim().split("\n")[0] : "";
+}
+
+/** "Bash pnpm test", "Edit page.tsx": a tool call as one short line (its most telling argument, once it is known). */
+export function toolActivity(c: { toolName: string; input?: unknown; toolMetadata?: unknown }): string {
+  const name = c.toolName.replace(/^mcp__/, "");
+  const line = argOf(c);
   return line ? `${name} ${line.length > 80 ? line.slice(0, 79) + "…" : line}` : name;
 }
 
@@ -206,43 +226,47 @@ export function subagentDoing(s: SubagentLine, step?: any): Activity {
  * A tool call in parts: what it does in a few plain words, the tool as its harness names it, and its most telling
  * argument (toolActivity's). "Bash git status" → { label: "Running a command", tool: "Bash", detail: "git status" }.
  */
-export function toolDoing(c: { toolName: string; input?: unknown }): Activity {
+export function toolDoing(c: { toolName: string; input?: unknown; toolMetadata?: unknown }): Activity {
   const tool = c.toolName.replace(/^mcp__/, "");
-  const line = toolActivity(c);
-  const o = c.input && typeof c.input === "object" ? (c.input as Record<string, unknown>) : {};
-  // apply_patch (Codex) names its files in its changes.
-  const changed = Array.isArray(o.changes) ? (o.changes as { path?: unknown }[]).map((x) => x?.path).filter((p): p is string => typeof p === "string") : [];
-  const detail = line.length > tool.length ? line.slice(tool.length + 1) : changed.map((p) => basename(p)).join(", ");
-  const path = o.file_path ?? o.path ?? o.notebook_path ?? changed[0];
-  const file = typeof path === "string" && path ? basename(path) : "";
-  const host = typeof o.url === "string" ? /^https?:\/\/([^/:?#]+)/.exec(o.url)?.[1]?.replace(/^www\./, "") : undefined;
-  const command = typeof o.command === "string" ? o.command.trim() : "";
-  return { ...toolLabel(tool, { file, host, command, files: changed.length }), tool, ...(detail ? { detail } : {}) };
+  const detail = argOf(c);
+  return { ...toolLabel(tool, metaOf(c)), tool, ...(detail ? { detail: detail.length > 80 ? detail.slice(0, 79) + "…" : detail } : {}) };
 }
 
-/** A tool, in a few words people read: what it does (and to what), not how it is called. */
-function toolLabel(tool: string, a: { file: string; host?: string; command: string; files: number }): { label: string; say: Say } {
-  const t = tool.toLowerCase();
-  if (/^(bash|shell|exec_command|local_shell|powershell)$/.test(t)) return /^pagent\b/.test(a.command) ? said("Using the app", "doing.app") : said("Running a command", "doing.command");
-  if (t === "read" || t === "view_image") return a.file ? said(`Reading ${a.file}`, "doing.read", { file: a.file }) : said("Reading a file", "doing.readAny");
-  if (t === "write") return a.file ? said(`Writing ${a.file}`, "doing.write", { file: a.file }) : said("Writing a file", "doing.writeAny");
-  if (/^(edit|multiedit|notebookedit|apply_patch)$/.test(t)) {
-    return a.files > 1 ? said(`Editing ${a.files} files`, "doing.editMany", { n: a.files }) : a.file ? said(`Editing ${a.file}`, "doing.edit", { file: a.file }) : said("Editing files", "doing.editAny");
+/** A tool call, in a few words people read: what it does (and to what), not how its harness calls it. */
+function toolLabel(tool: string, m: ToolMeta): { label: string; say: Say } {
+  const files = m.files ?? [];
+  const file = files.length ? basename(files[0]) : "";
+  const host = m.url ? /^https?:\/\/([^/:?#]+)/.exec(m.url)?.[1]?.replace(/^www\./, "") : undefined;
+  switch (m.kind) {
+    case "command": return /^pagent\b/.test(m.command?.trim() ?? "") ? said("Using the app", "doing.app") : said("Running a command", "doing.command");
+    case "read": return file ? said(`Reading ${file}`, "doing.read", { file }) : said("Reading a file", "doing.readAny");
+    case "write": return file ? said(`Writing ${file}`, "doing.write", { file }) : said("Writing a file", "doing.writeAny");
+    case "edit": return files.length > 1 ? said(`Editing ${files.length} files`, "doing.editMany", { n: files.length }) : file ? said(`Editing ${file}`, "doing.edit", { file }) : said("Editing files", "doing.editAny");
+    case "search": return said("Searching files", "doing.search");
+    case "web": return host ? said(`Reading ${host}`, "doing.web", { host }) : said("Reading a web page", "doing.webAny");
+    case "webSearch": return said("Searching the web", "doing.webSearch");
+    case "subagent": return said("Starting a sub-agent", "doing.subagentStart");
+    case "subagents": return said("Working with its sub-agents", "doing.subagents");
+    case "skill": return said("Loading a skill", "doing.skill");
+    case "toolSearch": return said("Finding a tool", "doing.toolSearch");
+    case "steps":
+    case "proposal":
+    case "planMode": return said("Updating its plan", "doing.plan");
+    case "ask": return said("Asking you", "doing.ask");
+    case "mcp": return m.server ? said(`Using ${m.server}`, "doing.mcp", { server: m.server }) : said(tool, "doing.tool", { tool });
+    default: return said(tool, "doing.tool", { tool });
   }
-  if (/^(grep|glob|ls)$/.test(t)) return said("Searching files", "doing.search");
-  if (t === "webfetch") return a.host ? said(`Reading ${a.host}`, "doing.web", { host: a.host }) : said("Reading a web page", "doing.webAny");
-  if (/^(websearch|web_search)$/.test(t)) return said("Searching the web", "doing.webSearch");
-  if (/^(agent|task|spawn_agent)$/.test(t)) return said("Starting a sub-agent", "doing.subagentStart");
-  if (/^(send_input|wait|resume_agent|close_agent)$/.test(t)) return said("Working with its sub-agents", "doing.subagents");
-  if (t === "skill") return said("Loading a skill", "doing.skill");
-  if (t === "toolsearch") return said("Finding a tool", "doing.toolSearch");
-  if (/^(todowrite|update_plan|taskcreate|taskupdate)$/.test(t)) return said("Updating its plan", "doing.plan");
-  if (t === "askuserquestion") return said("Asking you", "doing.ask");
-  // An MCP server's tool ("chrome-devtools__new_page"): which server.
-  const mcp = /^(.+?)__/.exec(tool);
-  if (mcp) {
-    const server = mcp[1].replace(/^plugin_[^_]+_/, "");
-    return said(`Using ${server}`, "doing.mcp", { server });
-  }
-  return said(tool, "doing.tool", { tool });
+}
+
+/**
+ * The agent's harness, and what it can do (its runner's describe, runner.ts), for pages to show only what it can: a
+ * terminal, a message into the turn in progress, a timeline, token use, answers to strangers. A remote agent (another
+ * app's): its conversation only.
+ */
+export async function harnessOfAgent(ctx: Ctx, ref: AgentRef) {
+  const decl = await declOf(ctx, ref);
+  if (!decl) return {};
+  if (isRemoteDecl(decl)) return { harness: { id: "remote", title: "Remote" }, can: { terminal: false, interject: false, trajectory: false, usage: false, strangers: false } };
+  const c = await capabilitiesOf(decl);
+  return { harness: c.harness, can: { terminal: c.ops.has("interactive"), interject: c.interject, trajectory: c.ops.has("trajectory"), usage: c.ops.has("usage"), strangers: c.ops.has("stranger") } };
 }

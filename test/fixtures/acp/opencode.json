@@ -1,0 +1,1554 @@
+{
+ "harness": "opencode",
+ "version": "1.19.3",
+ "recorded": "2026-10-18",
+ "note": "Recorded by scripts/record-acp.ts: the real CLI against test/lib/model-stub.ts in an isolated HOME, through its runner.",
+ "messages": [
+  {
+   "t": 1792316745549,
+   "dir": ">",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+     "protocolVersion": 1,
+     "clientCapabilities": {
+      "fs": {
+       "readTextFile": false,
+       "writeTextFile": false
+      },
+      "terminal": false
+     },
+     "clientInfo": {
+      "name": "pagent",
+      "version": "1"
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316746177,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+     "protocolVersion": 1,
+     "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+       "http": true,
+       "sse": true
+      },
+      "promptCapabilities": {
+       "embeddedContext": true,
+       "image": true
+      },
+      "sessionCapabilities": {
+       "close": {},
+       "fork": {},
+       "list": {},
+       "resume": {}
+      }
+     },
+     "authMethods": [
+      {
+       "description": "Run `opencode auth login` in the terminal",
+       "name": "Login with opencode",
+       "id": "opencode-login"
+      }
+     ],
+     "agentInfo": {
+      "name": "OpenCode",
+      "version": "1.19.3"
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316746178,
+   "dir": ">",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "session/list",
+    "params": {
+     "cwd": "$CWD"
+    }
+   }
+  },
+  {
+   "t": 1792316746218,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+     "sessions": []
+    }
+   }
+  },
+  {
+   "t": 1792316746218,
+   "dir": ">",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "session/new",
+    "params": {
+     "cwd": "$CWD",
+     "mcpServers": []
+    }
+   }
+  },
+  {
+   "t": 1792316746506,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "configOptions": [
+      {
+       "id": "model",
+       "name": "Model",
+       "category": "model",
+       "type": "select",
+       "currentValue": "stub/stand-in",
+       "options": [
+        {
+         "value": "opencode/big-pickle",
+         "name": "OpenCode/Big Pickle"
+        },
+        {
+         "value": "opencode/cat-jam-free",
+         "name": "OpenCode/Cat Jam Free"
+        },
+        {
+         "value": "opencode/deepseek-v4.1-flash-free",
+         "name": "OpenCode/DeepSeek V4.1 Flash Free"
+        },
+        {
+         "value": "opencode/glm-5.3-flash-free",
+         "name": "OpenCode/GLM-5.3-Flash Free"
+        },
+        {
+         "value": "opencode/ll-alpha-free",
+         "name": "OpenCode/LL Alpha Free"
+        },
+        {
+         "value": "opencode/longcat-2.5-preview-free",
+         "name": "OpenCode/LongCat 2.5 Preview Free"
+        },
+        {
+         "value": "opencode/mimo-v2.6-flash-free",
+         "name": "OpenCode/MiMo-V2.6-Flash Free"
+        },
+        {
+         "value": "opencode/muse-spark-1.3-contributor-free",
+         "name": "OpenCode/Muse Spark 1.3 Free"
+        },
+        {
+         "value": "opencode/nemotron-3-ultra-free",
+         "name": "OpenCode/Nemotron 3 Ultra Free"
+        },
+        {
+         "value": "opencode/nemotron-3.5-lightning-free",
+         "name": "OpenCode/Nemotron 3.5 Lightning Free"
+        },
+        {
+         "value": "opencode/nemotron-3.5-super-vl-free",
+         "name": "OpenCode/Nemotron 3.5 Super VL Free"
+        },
+        {
+         "value": "opencode/space-bunny-free",
+         "name": "OpenCode/Space Bunny Free"
+        },
+        {
+         "value": "stub/stand-in",
+         "name": "Stand-in/Stand-in"
+        }
+       ]
+      },
+      {
+       "id": "mode",
+       "name": "Session Mode",
+       "category": "mode",
+       "type": "select",
+       "currentValue": "build",
+       "options": [
+        {
+         "value": "build",
+         "name": "build",
+         "description": "The default agent. Executes tools based on configured permissions."
+        },
+        {
+         "value": "plan",
+         "name": "plan",
+         "description": "Plan mode. Disallows all edit tools."
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "t": 1792316746507,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "available_commands_update",
+      "availableCommands": [
+       {
+        "name": "customize-opencode",
+        "description": "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself."
+       },
+       {
+        "name": "init",
+        "description": "guided AGENTS.md setup"
+       },
+       {
+        "name": "review",
+        "description": "review changes [commit|branch|pr], defaults to uncommitted"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316746508,
+   "dir": ">",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "session/prompt",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "prompt": [
+      {
+       "type": "text",
+       "text": "<pagent-instructions>\nYou are the agent of the page /lisbon of a pagent app.\n</pagent-instructions>\n\nhello Ada"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "t": 1792316747139,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "msg_14e672b1a0016RhsIYnJmQ3lNk",
+      "content": {
+       "type": "text",
+       "text": "echo: <pagent-instructio"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747139,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "msg_14e672b1a0016RhsIYnJmQ3lNk",
+      "content": {
+       "type": "text",
+       "text": "ns>\nYou are the agent of"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747139,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "msg_14e672b1a0016RhsIYnJmQ3lNk",
+      "content": {
+       "type": "text",
+       "text": " the page /lisbon of a p"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747139,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "msg_14e672b1a0016RhsIYnJmQ3lNk",
+      "content": {
+       "type": "text",
+       "text": "agent app.\n</pagent-inst"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747140,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "msg_14e672b1a0016RhsIYnJmQ3lNk",
+      "content": {
+       "type": "text",
+       "text": "ructions>\n\nhello Ada"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747144,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "usage_update",
+      "used": 2478,
+      "size": 200000,
+      "cost": {
+       "amount": 0,
+       "currency": "USD"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747144,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+     "stopReason": "end_turn",
+     "usage": {
+      "inputTokens": 2478,
+      "outputTokens": 33,
+      "totalTokens": 2511
+     },
+     "_meta": {}
+    }
+   }
+  },
+  {
+   "t": 1792316747145,
+   "dir": ">",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "session/prompt",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "prompt": [
+      {
+       "type": "text",
+       "text": "!sh ls\n!todo read the notes | write a summary\n!write $CWD/summary.txt Lisbon is sunny today.\n!say Done: the summary is in summary.txt."
+      }
+     ]
+    }
+   }
+  },
+  {
+   "t": 1792316747185,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "call_3",
+      "title": "bash",
+      "kind": "execute",
+      "status": "pending",
+      "locations": [
+       {
+        "path": "$CWD"
+       }
+      ],
+      "rawInput": {
+       "cwd": "$CWD"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747185,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_3",
+      "status": "in_progress",
+      "kind": "execute",
+      "title": "ls",
+      "locations": [
+       {
+        "path": "$CWD"
+       }
+      ],
+      "rawInput": {
+       "command": "ls",
+       "cwd": "$CWD"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747197,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 0,
+    "method": "session/request_permission",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "toolCall": {
+      "toolCallId": "call_3",
+      "title": "ls",
+      "kind": "execute",
+      "status": "pending",
+      "locations": [],
+      "rawInput": {
+       "command": "ls"
+      }
+     },
+     "options": [
+      {
+       "optionId": "once",
+       "kind": "allow_once",
+       "name": "Allow once"
+      },
+      {
+       "optionId": "always",
+       "kind": "allow_always",
+       "name": "Always allow"
+      },
+      {
+       "optionId": "reject",
+       "kind": "reject_once",
+       "name": "Reject"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "t": 1792316747202,
+   "dir": ">",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 0,
+    "result": {
+     "outcome": {
+      "outcome": "selected",
+      "optionId": "once"
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747210,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_3",
+      "status": "in_progress",
+      "kind": "execute",
+      "title": "ls",
+      "locations": [
+       {
+        "path": "$CWD"
+       }
+      ],
+      "rawInput": {
+       "command": "ls",
+       "cwd": "$CWD"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747232,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_3",
+      "status": "in_progress",
+      "kind": "execute",
+      "title": "ls",
+      "locations": [
+       {
+        "path": "$CWD"
+       }
+      ],
+      "rawInput": {
+       "command": "ls",
+       "cwd": "$CWD"
+      },
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "notes.txt\n"
+        }
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747235,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_3",
+      "status": "completed",
+      "title": "ls",
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "notes.txt\n"
+        }
+       }
+      ],
+      "rawOutput": {
+       "output": "notes.txt\n",
+       "metadata": {
+        "output": "notes.txt\n",
+        "exit": 0,
+        "truncated": false
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747259,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "call_4",
+      "title": "todowrite",
+      "kind": "other",
+      "status": "pending",
+      "locations": [],
+      "rawInput": {}
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747259,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_4",
+      "status": "in_progress",
+      "kind": "other",
+      "title": "todowrite",
+      "locations": [],
+      "rawInput": {
+       "todos": [
+        {
+         "content": "read the notes",
+         "status": "in_progress",
+         "priority": "medium"
+        },
+        {
+         "content": "write a summary",
+         "status": "pending",
+         "priority": "medium"
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747259,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_4",
+      "status": "completed",
+      "title": "2 todos",
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "[\n  {\n    \"content\": \"read the notes\",\n    \"status\": \"in_progress\",\n    \"priority\": \"medium\"\n  },\n  {\n    \"content\": \"write a summary\",\n    \"status\": \"pending\",\n    \"priority\": \"medium\"\n  }\n]"
+        }
+       }
+      ],
+      "rawOutput": {
+       "output": "[\n  {\n    \"content\": \"read the notes\",\n    \"status\": \"in_progress\",\n    \"priority\": \"medium\"\n  },\n  {\n    \"content\": \"write a summary\",\n    \"status\": \"pending\",\n    \"priority\": \"medium\"\n  }\n]",
+       "metadata": {
+        "todos": [
+         {
+          "content": "read the notes",
+          "status": "in_progress",
+          "priority": "medium"
+         },
+         {
+          "content": "write a summary",
+          "status": "pending",
+          "priority": "medium"
+         }
+        ],
+        "truncated": false
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747280,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "call_5",
+      "title": "todowrite",
+      "kind": "other",
+      "status": "pending",
+      "locations": [],
+      "rawInput": {}
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747280,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_5",
+      "status": "in_progress",
+      "kind": "other",
+      "title": "todowrite",
+      "locations": [],
+      "rawInput": {
+       "todos": [
+        {
+         "content": "read the notes",
+         "status": "completed",
+         "priority": "medium"
+        },
+        {
+         "content": "write a summary",
+         "status": "completed",
+         "priority": "medium"
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747280,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_5",
+      "status": "completed",
+      "title": "0 todos",
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "[\n  {\n    \"content\": \"read the notes\",\n    \"status\": \"completed\",\n    \"priority\": \"medium\"\n  },\n  {\n    \"content\": \"write a summary\",\n    \"status\": \"completed\",\n    \"priority\": \"medium\"\n  }\n]"
+        }
+       }
+      ],
+      "rawOutput": {
+       "output": "[\n  {\n    \"content\": \"read the notes\",\n    \"status\": \"completed\",\n    \"priority\": \"medium\"\n  },\n  {\n    \"content\": \"write a summary\",\n    \"status\": \"completed\",\n    \"priority\": \"medium\"\n  }\n]",
+       "metadata": {
+        "todos": [
+         {
+          "content": "read the notes",
+          "status": "completed",
+          "priority": "medium"
+         },
+         {
+          "content": "write a summary",
+          "status": "completed",
+          "priority": "medium"
+         }
+        ],
+        "truncated": false
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747300,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "call_6",
+      "title": "write",
+      "kind": "edit",
+      "status": "pending",
+      "locations": [],
+      "rawInput": {}
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747300,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_6",
+      "status": "in_progress",
+      "kind": "edit",
+      "title": "write",
+      "locations": [
+       {
+        "path": "$CWD/summary.txt"
+       }
+      ],
+      "rawInput": {
+       "filePath": "$CWD/summary.txt",
+       "content": "Lisbon is sunny today."
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747308,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_6",
+      "status": "completed",
+      "title": "private/var/folders/06/n_tnp09j4d34_234k4k3pp540000gn/T/pagent-record-cAt9jg/lisbon/summary.txt",
+      "content": [
+       {
+        "type": "content",
+        "content": {
+         "type": "text",
+         "text": "Wrote file successfully."
+        }
+       }
+      ],
+      "rawOutput": {
+       "output": "Wrote file successfully.",
+       "metadata": {
+        "diagnostics": {},
+        "filepath": "$CWD/summary.txt",
+        "exists": false,
+        "truncated": false
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747328,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "msg_14e672e29001qyUDEslTqc0UYM",
+      "content": {
+       "type": "text",
+       "text": "Done: the summary is in "
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747328,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "msg_14e672e29001qyUDEslTqc0UYM",
+      "content": {
+       "type": "text",
+       "text": "summary.txt."
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747331,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+     "sessionId": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+     "update": {
+      "sessionUpdate": "usage_update",
+      "used": 3013,
+      "size": 200000,
+      "cost": {
+       "amount": 0,
+       "currency": "USD"
+      }
+     }
+    }
+   }
+  },
+  {
+   "t": 1792316747331,
+   "dir": "<",
+   "m": {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+     "stopReason": "end_turn",
+     "usage": {
+      "inputTokens": 3013,
+      "outputTokens": 12,
+      "totalTokens": 3025
+     },
+     "_meta": {}
+    }
+   }
+  }
+ ],
+ "export": {
+  "info": {
+   "id": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+   "slug": "tidy-panda",
+   "projectID": "global",
+   "directory": "$CWD",
+   "path": "private/var/folders/06/n_tnp09j4d34_234k4k3pp540000gn/T/pagent-record-cAt9jg/lisbon",
+   "title": "Stand-in session",
+   "agent": "build",
+   "model": {
+    "id": "stand-in",
+    "providerID": "stub"
+   },
+   "version": "1.19.3",
+   "summary": {
+    "additions": 0,
+    "deletions": 0,
+    "files": 0
+   },
+   "cost": 0,
+   "tokens": {
+    "input": 16401,
+    "output": 198,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "time": {
+    "created": 1792316746496,
+    "updated": 1792316747318
+   }
+  },
+  "messages": [
+   {
+    "info": {
+     "role": "user",
+     "time": {
+      "created": 1792316746513
+     },
+     "agent": "build",
+     "model": {
+      "providerID": "stub",
+      "modelID": "stand-in"
+     },
+     "summary": {
+      "diffs": []
+     },
+     "id": "msg_14e672b11001NmX4KXyJYrsgm6",
+     "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635"
+    },
+    "parts": [
+     {
+      "type": "text",
+      "text": "<pagent-instructions>\nYou are the agent of the page /lisbon of a pagent app.\n</pagent-instructions>\n\nhello Ada",
+      "id": "prt_14e672b120013dpd2LVaR66LAa",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672b11001NmX4KXyJYrsgm6"
+     }
+    ]
+   },
+   {
+    "info": {
+     "parentID": "msg_14e672b11001NmX4KXyJYrsgm6",
+     "role": "assistant",
+     "mode": "build",
+     "agent": "build",
+     "path": {
+      "cwd": "$CWD",
+      "root": "/"
+     },
+     "cost": 0,
+     "tokens": {
+      "total": 2511,
+      "input": 2478,
+      "output": 33,
+      "reasoning": 0,
+      "cache": {
+       "write": 0,
+       "read": 0
+      }
+     },
+     "modelID": "stand-in",
+     "providerID": "stub",
+     "time": {
+      "created": 1792316746522,
+      "completed": 1792316747125
+     },
+     "finish": "stop",
+     "id": "msg_14e672b1a0016RhsIYnJmQ3lNk",
+     "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635"
+    },
+    "parts": [
+     {
+      "type": "step-start",
+      "id": "prt_14e672d6f0017OVa1Q4X1579ag",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672b1a0016RhsIYnJmQ3lNk"
+     },
+     {
+      "type": "text",
+      "text": "echo: <pagent-instructions>\nYou are the agent of the page /lisbon of a pagent app.\n</pagent-instructions>\n\nhello Ada",
+      "time": {
+       "start": 1792316747120,
+       "end": 1792316747122
+      },
+      "id": "prt_14e672d70001sYYYU2h7nbxxNx",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672b1a0016RhsIYnJmQ3lNk"
+     },
+     {
+      "reason": "stop",
+      "type": "step-finish",
+      "tokens": {
+       "total": 2511,
+       "input": 2478,
+       "output": 33,
+       "reasoning": 0,
+       "cache": {
+        "write": 0,
+        "read": 0
+       }
+      },
+      "cost": 0,
+      "id": "prt_14e672d73001lSgbpk0ENZVuka",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672b1a0016RhsIYnJmQ3lNk"
+     }
+    ]
+   },
+   {
+    "info": {
+     "role": "user",
+     "time": {
+      "created": 1792316747147
+     },
+     "agent": "build",
+     "model": {
+      "providerID": "stub",
+      "modelID": "stand-in"
+     },
+     "summary": {
+      "diffs": []
+     },
+     "id": "msg_14e672d8b0017oc6IiMSTV7vCn",
+     "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635"
+    },
+    "parts": [
+     {
+      "type": "text",
+      "text": "!sh ls\n!todo read the notes | write a summary\n!write $CWD/summary.txt Lisbon is sunny today.\n!say Done: the summary is in summary.txt.",
+      "id": "prt_14e672d8b002u4wYLZBU7yOj3b",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672d8b0017oc6IiMSTV7vCn"
+     }
+    ]
+   },
+   {
+    "info": {
+     "parentID": "msg_14e672d8b0017oc6IiMSTV7vCn",
+     "role": "assistant",
+     "mode": "build",
+     "agent": "build",
+     "path": {
+      "cwd": "$CWD",
+      "root": "/"
+     },
+     "cost": 0,
+     "tokens": {
+      "total": 2590,
+      "input": 2578,
+      "output": 12,
+      "reasoning": 0,
+      "cache": {
+       "write": 0,
+       "read": 0
+      }
+     },
+     "modelID": "stand-in",
+     "providerID": "stub",
+     "time": {
+      "created": 1792316747150,
+      "completed": 1792316747223
+     },
+     "finish": "tool-calls",
+     "id": "msg_14e672d8e001R4ZLDnOvGPQexQ",
+     "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635"
+    },
+    "parts": [
+     {
+      "type": "step-start",
+      "id": "prt_14e672da00010ZX0FmGL489hYi",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672d8e001R4ZLDnOvGPQexQ"
+     },
+     {
+      "type": "tool",
+      "tool": "bash",
+      "callID": "call_3",
+      "state": {
+       "status": "completed",
+       "input": {
+        "command": "ls"
+       },
+       "output": "notes.txt\n",
+       "metadata": {
+        "output": "notes.txt\n",
+        "exit": 0,
+        "truncated": false
+       },
+       "title": "ls",
+       "time": {
+        "start": 1792316747174,
+        "end": 1792316747219
+       }
+      },
+      "id": "prt_14e672da2001lYd9p3yZaPa2SP",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672d8e001R4ZLDnOvGPQexQ"
+     },
+     {
+      "reason": "tool-calls",
+      "type": "step-finish",
+      "tokens": {
+       "total": 2590,
+       "input": 2578,
+       "output": 12,
+       "reasoning": 0,
+       "cache": {
+        "write": 0,
+        "read": 0
+       }
+      },
+      "cost": 0,
+      "id": "prt_14e672dd4001RI4k7o6QcdxsOq",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672d8e001R4ZLDnOvGPQexQ"
+     }
+    ]
+   },
+   {
+    "info": {
+     "parentID": "msg_14e672d8b0017oc6IiMSTV7vCn",
+     "role": "assistant",
+     "mode": "build",
+     "agent": "build",
+     "path": {
+      "cwd": "$CWD",
+      "root": "/"
+     },
+     "cost": 0,
+     "tokens": {
+      "total": 2679,
+      "input": 2631,
+      "output": 48,
+      "reasoning": 0,
+      "cache": {
+       "write": 0,
+       "read": 0
+      }
+     },
+     "modelID": "stand-in",
+     "providerID": "stub",
+     "time": {
+      "created": 1792316747224,
+      "completed": 1792316747248
+     },
+     "finish": "tool-calls",
+     "id": "msg_14e672dd8001U2oGxRsP0SFAx1",
+     "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635"
+    },
+    "parts": [
+     {
+      "type": "step-start",
+      "id": "prt_14e672de9001XR1l4tp7MlQX72",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672dd8001U2oGxRsP0SFAx1"
+     },
+     {
+      "type": "tool",
+      "tool": "todowrite",
+      "callID": "call_4",
+      "state": {
+       "status": "completed",
+       "input": {
+        "todos": [
+         {
+          "content": "read the notes",
+          "status": "in_progress",
+          "priority": "medium"
+         },
+         {
+          "content": "write a summary",
+          "status": "pending",
+          "priority": "medium"
+         }
+        ]
+       },
+       "output": "[\n  {\n    \"content\": \"read the notes\",\n    \"status\": \"in_progress\",\n    \"priority\": \"medium\"\n  },\n  {\n    \"content\": \"write a summary\",\n    \"status\": \"pending\",\n    \"priority\": \"medium\"\n  }\n]",
+       "metadata": {
+        "todos": [
+         {
+          "content": "read the notes",
+          "status": "in_progress",
+          "priority": "medium"
+         },
+         {
+          "content": "write a summary",
+          "status": "pending",
+          "priority": "medium"
+         }
+        ],
+        "truncated": false
+       },
+       "title": "2 todos",
+       "time": {
+        "start": 1792316747245,
+        "end": 1792316747246
+       }
+      },
+      "id": "prt_14e672dea001Qlx5KY4pG1W1VS",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672dd8001U2oGxRsP0SFAx1"
+     },
+     {
+      "reason": "tool-calls",
+      "type": "step-finish",
+      "tokens": {
+       "total": 2679,
+       "input": 2631,
+       "output": 48,
+       "reasoning": 0,
+       "cache": {
+        "write": 0,
+        "read": 0
+       }
+      },
+      "cost": 0,
+      "id": "prt_14e672def001gA5mO4zm1loA3l",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672dd8001U2oGxRsP0SFAx1"
+     }
+    ]
+   },
+   {
+    "info": {
+     "parentID": "msg_14e672d8b0017oc6IiMSTV7vCn",
+     "role": "assistant",
+     "mode": "build",
+     "agent": "build",
+     "path": {
+      "cwd": "$CWD",
+      "root": "/"
+     },
+     "cost": 0,
+     "tokens": {
+      "total": 2825,
+      "input": 2777,
+      "output": 48,
+      "reasoning": 0,
+      "cache": {
+       "write": 0,
+       "read": 0
+      }
+     },
+     "modelID": "stand-in",
+     "providerID": "stub",
+     "time": {
+      "created": 1792316747249,
+      "completed": 1792316747270
+     },
+     "finish": "tool-calls",
+     "id": "msg_14e672df1001BFR94MyD64fTtc",
+     "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635"
+    },
+    "parts": [
+     {
+      "type": "step-start",
+      "id": "prt_14e672e01001puo3RyF1XV62jl",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672df1001BFR94MyD64fTtc"
+     },
+     {
+      "type": "tool",
+      "tool": "todowrite",
+      "callID": "call_5",
+      "state": {
+       "status": "completed",
+       "input": {
+        "todos": [
+         {
+          "content": "read the notes",
+          "status": "completed",
+          "priority": "medium"
+         },
+         {
+          "content": "write a summary",
+          "status": "completed",
+          "priority": "medium"
+         }
+        ]
+       },
+       "output": "[\n  {\n    \"content\": \"read the notes\",\n    \"status\": \"completed\",\n    \"priority\": \"medium\"\n  },\n  {\n    \"content\": \"write a summary\",\n    \"status\": \"completed\",\n    \"priority\": \"medium\"\n  }\n]",
+       "metadata": {
+        "todos": [
+         {
+          "content": "read the notes",
+          "status": "completed",
+          "priority": "medium"
+         },
+         {
+          "content": "write a summary",
+          "status": "completed",
+          "priority": "medium"
+         }
+        ],
+        "truncated": false
+       },
+       "title": "0 todos",
+       "time": {
+        "start": 1792316747267,
+        "end": 1792316747268
+       }
+      },
+      "id": "prt_14e672e02001K9RLigHw91BrdG",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672df1001BFR94MyD64fTtc"
+     },
+     {
+      "reason": "tool-calls",
+      "type": "step-finish",
+      "tokens": {
+       "total": 2825,
+       "input": 2777,
+       "output": 48,
+       "reasoning": 0,
+       "cache": {
+        "write": 0,
+        "read": 0
+       }
+      },
+      "cost": 0,
+      "id": "prt_14e672e05001STNbtca8z6MQMa",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672df1001BFR94MyD64fTtc"
+     }
+    ]
+   },
+   {
+    "info": {
+     "parentID": "msg_14e672d8b0017oc6IiMSTV7vCn",
+     "role": "assistant",
+     "mode": "build",
+     "agent": "build",
+     "path": {
+      "cwd": "$CWD",
+      "root": "/"
+     },
+     "cost": 0,
+     "tokens": {
+      "total": 2969,
+      "input": 2924,
+      "output": 45,
+      "reasoning": 0,
+      "cache": {
+       "write": 0,
+       "read": 0
+      }
+     },
+     "modelID": "stand-in",
+     "providerID": "stub",
+     "time": {
+      "created": 1792316747271,
+      "completed": 1792316747304
+     },
+     "finish": "tool-calls",
+     "id": "msg_14e672e07001UNsMXi6u9vkECS",
+     "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635"
+    },
+    "parts": [
+     {
+      "type": "step-start",
+      "id": "prt_14e672e17001KQQwOm0ZB42Ysa",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672e07001UNsMXi6u9vkECS"
+     },
+     {
+      "type": "tool",
+      "tool": "write",
+      "callID": "call_6",
+      "state": {
+       "status": "completed",
+       "input": {
+        "filePath": "$CWD/summary.txt",
+        "content": "Lisbon is sunny today."
+       },
+       "output": "Wrote file successfully.",
+       "metadata": {
+        "diagnostics": {},
+        "filepath": "$CWD/summary.txt",
+        "exists": false,
+        "truncated": false
+       },
+       "title": "private/var/folders/06/n_tnp09j4d34_234k4k3pp540000gn/T/pagent-record-cAt9jg/lisbon/summary.txt",
+       "time": {
+        "start": 1792316747291,
+        "end": 1792316747302
+       }
+      },
+      "id": "prt_14e672e190013M4kmMrZp5Kh3e",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672e07001UNsMXi6u9vkECS"
+     },
+     {
+      "reason": "tool-calls",
+      "type": "step-finish",
+      "tokens": {
+       "total": 2969,
+       "input": 2924,
+       "output": 45,
+       "reasoning": 0,
+       "cache": {
+        "write": 0,
+        "read": 0
+       }
+      },
+      "cost": 0,
+      "id": "prt_14e672e270010o2Mh4TuCPI6Pg",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672e07001UNsMXi6u9vkECS"
+     }
+    ]
+   },
+   {
+    "info": {
+     "parentID": "msg_14e672d8b0017oc6IiMSTV7vCn",
+     "role": "assistant",
+     "mode": "build",
+     "agent": "build",
+     "path": {
+      "cwd": "$CWD",
+      "root": "/"
+     },
+     "cost": 0,
+     "tokens": {
+      "total": 3025,
+      "input": 3013,
+      "output": 12,
+      "reasoning": 0,
+      "cache": {
+       "write": 0,
+       "read": 0
+      }
+     },
+     "modelID": "stand-in",
+     "providerID": "stub",
+     "time": {
+      "created": 1792316747305,
+      "completed": 1792316747317
+     },
+     "finish": "stop",
+     "id": "msg_14e672e29001qyUDEslTqc0UYM",
+     "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635"
+    },
+    "parts": [
+     {
+      "type": "step-start",
+      "id": "prt_14e672e310015lP67TlDRvtlKP",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672e29001qyUDEslTqc0UYM"
+     },
+     {
+      "type": "text",
+      "text": "Done: the summary is in summary.txt.",
+      "time": {
+       "start": 1792316747314,
+       "end": 1792316747315
+      },
+      "id": "prt_14e672e32001KsZG63rISaY60W",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672e29001qyUDEslTqc0UYM"
+     },
+     {
+      "reason": "stop",
+      "type": "step-finish",
+      "tokens": {
+       "total": 3025,
+       "input": 3013,
+       "output": 12,
+       "reasoning": 0,
+       "cache": {
+        "write": 0,
+        "read": 0
+       }
+      },
+      "cost": 0,
+      "id": "prt_14e672e33001e7Sy8bvKVfJBIx",
+      "sessionID": "ses_eb198d4ffffeTIgjAFRf7Jv635",
+      "messageID": "msg_14e672e29001qyUDEslTqc0UYM"
+     }
+    ]
+   }
+  ]
+ }
+}

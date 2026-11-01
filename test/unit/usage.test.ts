@@ -20,7 +20,7 @@ const block = (id: string, s: number, u: ReturnType<typeof usage>, more: Record<
 const user = (s: number) => line({ type: "user", uuid: `u${s}`, timestamp: at(s), message: { role: "user", content: "hi" } });
 const toolResult = (s: number) => line({ type: "user", uuid: `r${s}`, timestamp: at(s), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
 
-describe("claude-code: usage from the transcript", () => {
+describe("claude: usage from the transcript", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-usage-"));
   after(() => rmSync(dir, { recursive: true, force: true }));
 

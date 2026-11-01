@@ -1,6 +1,7 @@
-// The engine's own words on the page (bridge: i18n.ts) are in the app's language: English by default, as they always
-// were, or its home page's metadata.lang. What an agent is doing comes from the server as words of the same table
-// (core: agents/status.ts), in English too: the table's English is the server's, word for word.
+// The engine's own words on the page (bridge: i18n.ts) are in the language the app is read in, as the app's own words
+// are: the reader's choice, else its home page's metadata.lang, else the browser's; English when the table has no words
+// for it. What an agent is doing comes from the server as words of the same table (core: agents/status.ts), in English
+// too: the table's English is the server's, word for word.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,40 +11,65 @@ import { callerLabel } from "../../packages/bridge/src/contract.ts";
 import { labelOf, langOf, sayIn, setAppLanguage, setLanguage, t, toolWord, WORDS } from "../../packages/bridge/src/i18n.ts";
 import { subagentDoing, toolDoing, type Activity } from "../../packages/core/src/agents/status.ts";
 import { repo } from "../lib/app.ts";
+import { withMeta } from "../lib/tools.ts";
 
-afterEach(() => setLanguage(null));
+/** The browser's language, as navigator.language says it (Node has one too: the machine's). */
+const browserSays = (language: string) => Object.defineProperty(globalThis, "navigator", { value: { language }, configurable: true, writable: true });
+browserSays("en-US");
+setAppLanguage(null); // read again: the module was loaded with the machine's
+
+afterEach(() => {
+  setLanguage(null);
+  browserSays("en-US");
+  setAppLanguage(null);
+});
 
 const doing: Activity[] = [
-  toolDoing({ toolName: "Bash", input: { command: "git status" } }),
-  toolDoing({ toolName: "Bash", input: { command: "pagent screen read /" } }),
-  toolDoing({ toolName: "Read", input: { file_path: "/x/data.json" } }),
-  toolDoing({ toolName: "Read" }),
-  toolDoing({ toolName: "Write", input: { file_path: "/x/a.md" } }),
-  toolDoing({ toolName: "Edit", input: { file_path: "/app/notes/page.tsx" } }),
-  toolDoing({ toolName: "apply_patch", input: { changes: [{ path: "/a/one.ts" }, { path: "/a/two.ts" }] } }),
-  toolDoing({ toolName: "Grep", input: { pattern: "x" } }),
-  toolDoing({ toolName: "WebFetch", input: { url: "https://www.example.com/a?b" } }),
-  toolDoing({ toolName: "WebSearch", input: { query: "pagent" } }),
-  toolDoing({ toolName: "Agent", input: { description: "look" } }),
-  toolDoing({ toolName: "Skill", input: { skill: "pagent" } }),
-  toolDoing({ toolName: "TodoWrite", input: {} }),
-  toolDoing({ toolName: "mcp__chrome-devtools__new_page", input: { url: "http://localhost:3000" } }),
-  toolDoing({ toolName: "Monitor" }),
-  subagentDoing({ type: "Explore", description: "Look at the pages", status: "running" }, { type: "dynamic-tool", toolName: "Read", input: { file_path: "/a/page.tsx" } }),
+  toolDoing(withMeta({ toolName: "Bash", input: { command: "git status" } })),
+  toolDoing(withMeta({ toolName: "Bash", input: { command: "pagent screen read /" } })),
+  toolDoing(withMeta({ toolName: "Read", input: { file_path: "/x/data.json" } })),
+  toolDoing(withMeta({ toolName: "Read" })),
+  toolDoing(withMeta({ toolName: "Write", input: { file_path: "/x/a.md" } })),
+  toolDoing(withMeta({ toolName: "Edit", input: { file_path: "/app/notes/page.tsx" } })),
+  toolDoing(withMeta({ toolName: "apply_patch", input: { changes: [{ path: "/a/one.ts" }, { path: "/a/two.ts" }] } })),
+  toolDoing(withMeta({ toolName: "Grep", input: { pattern: "x" } })),
+  toolDoing(withMeta({ toolName: "WebFetch", input: { url: "https://www.example.com/a?b" } })),
+  toolDoing(withMeta({ toolName: "WebSearch", input: { query: "pagent" } })),
+  toolDoing(withMeta({ toolName: "Agent", input: { description: "look" } })),
+  toolDoing(withMeta({ toolName: "Skill", input: { skill: "pagent" } })),
+  toolDoing(withMeta({ toolName: "TodoWrite", input: {} })),
+  toolDoing(withMeta({ toolName: "mcp__chrome-devtools__new_page", input: { url: "http://localhost:3000" } })),
+  toolDoing(withMeta({ toolName: "Monitor" })),
+  subagentDoing({ type: "Explore", description: "Look at the pages", status: "running" }, withMeta({ type: "dynamic-tool", toolName: "Read", input: { file_path: "/a/page.tsx" } })),
   subagentDoing({ type: "Explore", description: "Look at the pages", status: "running" }),
   subagentDoing({ type: "Explore", description: "", status: "running" }),
   subagentDoing({ type: "Explore", description: "x", status: "running" }, { type: "reasoning", text: "…" }),
 ];
 
-test("by default the words are English, as they always were; the server's labels word for word", () => {
+test("in an English browser, with no language chosen or declared: English; the server's labels word for word", () => {
   assert.equal(t("console.placeholder"), "Message, or / for commands");
-  assert.equal(toolWord("Bash"), "Bash"); // a chip: the tool's own name
-  assert.equal(toolWord("mcp__chrome-devtools__new_page"), "chrome-devtools__new_page");
+  assert.equal(toolWord(withMeta({ toolName: "Bash" })), "Bash"); // a chip: the tool's own name
+  assert.equal(toolWord(withMeta({ toolName: "mcp__chrome-devtools__new_page" })), "chrome-devtools__new_page");
   for (const a of doing) assert.equal(labelOf(a), a.label);
   assert.equal(callerLabel({ kind: "external", ip: "1.2.3.4" }), "1.2.3.4 (a stranger)");
   // A language the table has no words for: English.
   setLanguage("fr");
   assert.equal(t("console.placeholder"), "Message, or / for commands");
+});
+
+test("one language for the engine's words and the app's: the reader's choice, else the app's, else the browser's", () => {
+  browserSays("zh-CN");
+  setAppLanguage(null); // as the shell says it, once it knows the app declares none
+  assert.equal(t("app.back"), "返回", "an app with no language, in a Chinese browser: the engine's words in Chinese");
+  setAppLanguage("en");
+  assert.equal(t("app.back"), "Back", "the app's language over the browser's");
+  setLanguage("zh-CN");
+  assert.equal(t("app.back"), "返回", "the reader's choice over both");
+  setLanguage(null);
+  setAppLanguage(null);
+  browserSays("fr-FR");
+  setAppLanguage(null);
+  assert.equal(t("app.back"), "Back", "a language the table has no words for: English");
 });
 
 test("a reader's choice wins over the app's language; null goes back to the app's", () => {
@@ -85,13 +111,13 @@ test("zh-CN: what an agent is doing, the tools, the buttons and hints in plain C
   assert.equal(label(16), "Explore：Look at the pages"); // what it was asked: the agent's words, as they are
   assert.equal(label(17), "Explore：正在启动");
   assert.equal(labelOf({ label: "Thinking… (esc to interrupt)" }), "Thinking… (esc to interrupt)"); // a TUI's own words
-  assert.equal(toolWord("Bash"), "运行命令");
-  assert.equal(toolWord("WebFetch"), "读网页");
-  assert.equal(toolWord("mcp__chrome-devtools__new_page"), "chrome-devtools");
+  assert.equal(toolWord(withMeta({ toolName: "Bash" })), "运行命令");
+  assert.equal(toolWord(withMeta({ toolName: "WebFetch" })), "读网页");
+  assert.equal(toolWord(withMeta({ toolName: "mcp__chrome-devtools__new_page" })), "chrome-devtools");
   assert.equal(t("console.placeholder"), "输入消息，或输入 / 使用命令");
   assert.equal(sayIn({ key: "ask.allow", values: { tool: "Bash" } }), "允许 Bash 吗？");
   assert.equal(callerLabel({ kind: "external", ip: "1.2.3.4" }), "1.2.3.4（陌生人）");
-  const quiet = (ms: number) => quietNote({ busy: true, activity: "x", quietSince: Date.now() - ms, questions: [], session: {} });
+  const quiet = (ms: number) => quietNote({ busy: true, activity: "x", quietSince: Date.now() - ms, questions: [], queued: [], session: {} });
   assert.equal(quiet(16 * 60_000), "已经 16 分钟没有动静，可能卡住了");
 });
 

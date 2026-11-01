@@ -23,6 +23,8 @@ export function toolOf(item: Item): { name: string; input: unknown } | null {
       return { name: "apply_patch", input: { changes: (item.changes ?? []).map((c: any) => ({ path: c.path, kind: c.kind?.type, diff: c.diff })) } };
     case "webSearch":
       return { name: "web_search", input: { query: item.query } };
+    case "plan": // a plan proposed in plan mode (its text, markdown): "plan", as the app shows proposed plans (bridge plan.ts)
+      return { name: "plan", input: { plan: item.text ?? "" } };
     case "collabAgentToolCall": // waiting for sub-agents, sending one a message, closing one
       return { name: snake(String(item.tool ?? "agents")), input: { ...(item.prompt ? { prompt: item.prompt } : {}), ...(item.receiverThreadIds?.length ? { agents: item.receiverThreadIds } : {}) } };
     default:

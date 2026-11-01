@@ -18,6 +18,8 @@
 // declarations.ts). Each event runs it once, in order: a turn's start and end are never skipped (they queue while it
 // runs, up to MAX_QUEUED). It never fires for a turn its own action led to (it told the agent, directly or through
 // agents passing it on: runs.ts, lineageOf), as a watch's own writes do not wake it: an action may tell its agent.
+// And what the agent says outside any turn, as its runner reports it (a "message": runs.ts, saidOutside), shaped as a
+// turn's end: a Grok Bot's scheduled report, a reply that came after its turn ended.
 import { runAction, valueText } from "./actions.ts";
 import { onTurn, triggerFiring, type Run } from "./agents.ts";
 import { axModule } from "./ax-module.ts";
@@ -50,7 +52,7 @@ const keyOf = (node: string, name: string) => `${node}#${name}`;
 /** What a turn trigger's run is for: the turn (its action's input), and the triggers that turn came from. */
 type TurnFire = { why: string; input: TurnEvent; from: string[] };
 /** The bridge's TurnEvent (declarations.ts): each package is built on its own, so each writes it down. */
-type TurnEvent = { phase: "start" | "end"; runId: string; messageId: string; agent: string; message: string; from: string; reply?: string };
+type TurnEvent = { phase: "start" | "end" | "message"; runId: string; messageId: string; agent: string; message: string; from: string; reply?: string };
 const turnQueue = new Map<string, TurnFire[]>(); // a turn trigger's events that came while it ran
 const MAX_QUEUED = 50;
 
@@ -250,13 +252,16 @@ function due(fields: number[][], t: Date): boolean {
 // first turn starts, so its triggers are read then, and its turn's end waits for that.
 const turnOrder = new Map<string, Promise<void>>();
 
-/** A turn starting or ending: the turn triggers of its agent's node that follow that agent, unless it led to it. */
-function turnFired(ctx: Ctx, phase: "start" | "end", r: Run, reply?: string) {
+/**
+ * A turn starting or ending, or its agent saying something outside one: the turn triggers of its agent's node that
+ * follow that agent, unless it led to it.
+ */
+function turnFired(ctx: Ctx, phase: TurnEvent["phase"], r: Run, reply?: string) {
   const node = r.ref.node;
   const message = r.user.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
   // messageId: the turn's one id, the conversation's too (ChatTurn.id: agents/ids.ts).
-  const input: TurnEvent = { phase, runId: r.id, messageId: r.user.id, agent: r.ref.agent, message, from: callerName(r.caller), ...(phase === "end" ? { reply: reply ?? "" } : {}) };
-  const why = `turn ${phase} of ${r.ref.agent}`;
+  const input: TurnEvent = { phase, runId: r.id, messageId: r.user.id, agent: r.ref.agent, message, from: callerName(r.caller), ...(phase !== "start" ? { reply: reply ?? "" } : {}) };
+  const why = phase === "message" ? `${r.ref.agent} said something outside a turn` : `turn ${phase} of ${r.ref.agent}`;
   const next = (turnOrder.get(node) ?? Promise.resolve()).then(async () => {
     const triggers = armedNodes.has(node) ? armed.filter((a) => a.node === node) : await armedOf(ctx, node);
     for (const a of triggers) {

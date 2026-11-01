@@ -9,8 +9,8 @@ import { attachmentsOf } from "./attachments.ts";
 import { appIds, said } from "./ids.ts";
 import { callerOf } from "./prompt.ts";
 import { driverOf } from "./driver.ts";
-import { declOf, invoke, runnerBase, runnerScript } from "./runner.ts";
-import { active, usages } from "./runs.ts";
+import { canDo, declOf, invoke, runnerBase, runnerScript, type Op } from "./runner.ts";
+import { active, saidOutside, usages } from "./runs.ts";
 import type { Ctx, Run } from "./types.ts";
 
 const watchers = new Map<string, { what: string; watchers: FSWatcher[] }>();
@@ -72,18 +72,31 @@ const isDir = (p: string) => {
   }
 };
 
-export async function runnerOp(ctx: Ctx, ref: AgentRef, op: string, pick: string): Promise<any> {
+/**
+ * One of the runner's quick ops (history, last, info, usage, trajectory, holder): its answer (the event of type
+ * `pick`), or null. An op the runner does not answer (its describe does not list it) is not asked: null, and the
+ * caller does without (runners/src/lib/contract.ts, OPS). The answer is taken as soon as it comes: the op may go on
+ * (a Grok Bot runner then reads the bot's thread), and what it finds the agent said outside any turn (`said`) is for
+ * turn triggers (runs.ts, saidOutside).
+ */
+export async function runnerOp(ctx: Ctx, ref: AgentRef, op: Op, pick: string): Promise<any> {
   const decl = await declOf(ctx, ref);
   if (!decl) return null;
   const driver = await driverOf(decl);
   if (driver.op) return driver.op(ctx, ref, op);
+  if (!(await canDo(decl, op))) return null;
   const base = runnerBase(ctx, ref, decl);
   const script = runnerScript(decl.runner);
   const more = await driver.opInput(ctx, ref, script, base.cwd);
   let result: any = null;
-  await invoke(script, { op, ...base, ...more }, base.cwd, (e) => {
-    if (e.type === pick) result = e;
+  let answered = () => {};
+  const answer = new Promise<void>((r) => (answered = r));
+  const done = invoke(script, { op, ...base, ...more }, base.cwd, (e) => {
+    if (e.type === "said") saidOutside(ctx, ref, e);
+    else if (e.type === pick && !result) (result = e), answered();
   });
+  done.catch(() => {}); // after the answer: the op's own business
+  await Promise.race([answer, done]);
   return result;
 }
 
@@ -107,9 +120,43 @@ export const keptHistory = (ref: AgentRef): UIMessage[] | null => lastRead.get(k
 
 /** The transcript's stamp and those of what else was read ("" when the transcript is gone). */
 const stampsOf = (files: string[]) => (stampOf(files[0]) ? files.map(stampOf).join("|") : "");
+/** Read it again next time (its files stay known: the stamp before that read is taken on them). */
 export function forget(ref: AgentRef) {
-  historyCache.delete(keyOf(ref));
+  const kept = historyCache.get(keyOf(ref));
+  if (kept) kept.stamp = "";
+  historyReading.delete(keyOf(ref)); // one being read began before what changed: who asks now reads again
   lastCache.delete(keyOf(ref));
+}
+
+const historyReading = new Map<string, Promise<UIMessage[]>>();
+
+/**
+ * The projected history, read again only when what the runner read changed, and once for everyone who asks while it
+ * is being read. The stamp is taken before the runner reads: what the harness writes meanwhile is read next time.
+ */
+function projected(ctx: Ctx, ref: AgentRef): Promise<UIMessage[]> {
+  const key = keyOf(ref);
+  const kept = historyCache.get(key);
+  if (kept && kept.stamp && stampsOf(kept.files) === kept.stamp) return Promise.resolve(kept.messages);
+  if (!historyReading.has(key)) {
+    const reading: Promise<UIMessage[]> = (async () => {
+      const before = kept ? stampsOf(kept.files) : "";
+      const out = await runnerOp(ctx, ref, "history", "history");
+      const messages = ((out?.messages ?? []) as UIMessage[]).map((m) => attachmentsOf(ctx, ref, callerOf(m)));
+      lastRead.set(key, messages);
+      if (out?.file) {
+        // What the runner read besides the transcript (its sub-agents'), when it says: changed, the history did too.
+        const more: string[] = Array.isArray(out.watch) ? out.watch.filter((w: unknown) => typeof w === "string") : [];
+        watchTranscript(ref, out.file, more);
+        const files = [out.file, ...more];
+        // Read with no stamp before it (the first read): kept for its files, read again next time.
+        historyCache.set(key, { files, stamp: kept && files.join("\n") === kept.files.join("\n") ? before : "", messages });
+      } else historyCache.delete(key);
+      return messages;
+    })().finally(() => historyReading.get(key) === reading && historyReading.delete(key));
+    historyReading.set(key, reading);
+  }
+  return historyReading.get(key)!;
 }
 
 /**
@@ -118,22 +165,7 @@ export function forget(ref: AgentRef) {
  * there; otherwise all of it.
  */
 export async function history(ctx: Ctx, ref: AgentRef, after?: string): Promise<UIMessage[]> {
-  const key = keyOf(ref);
-  const kept = historyCache.get(key);
-  let messages: UIMessage[];
-  if (kept && kept.stamp && stampsOf(kept.files) === kept.stamp) messages = kept.messages;
-  else {
-    const out = await runnerOp(ctx, ref, "history", "history");
-    messages = ((out?.messages ?? []) as UIMessage[]).map((m) => attachmentsOf(ctx, ref, callerOf(m)));
-    lastRead.set(key, messages);
-    if (out?.file) {
-      // What the runner read besides the transcript (its sub-agents'), when it says: changed, the history did too.
-      const more: string[] = Array.isArray(out.watch) ? out.watch.filter((w: unknown) => typeof w === "string") : [];
-      watchTranscript(ref, out.file, more);
-      const files = [out.file, ...more];
-      historyCache.set(key, { files, stamp: stampsOf(files), messages });
-    }
-  }
+  let messages = await projected(ctx, ref);
   messages = appIds(ctx, ref, messages);
   const from = after ? messages.findIndex((m) => m.id === after) : -1;
   return from >= 0 ? messages.slice(from) : messages;

@@ -7,7 +7,8 @@
   "types": "./src/index.tsx",
   "exports": {
     ".": "./src/index.tsx",
-    "./i18n": "./src/i18n.ts"
+    "./i18n": "./src/i18n.ts",
+    "./settings": "./src/settings.ts"
   },
   "peerDependencies": {
     "react": "^19.3.0"

@@ -10,14 +10,14 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fakePage, repo, testApp, until, type TestApp } from "../lib/app.ts";
 
-const runner = join(repo, "packages/runners/src/claude-code.ts");
+const runner = join(repo, "packages/runners/src/claude.ts");
 const line = (o: unknown) => JSON.stringify(o) + "\n";
 const at = (s: number) => new Date(Date.parse("2026-10-15T07:00:00Z") + s * 1000).toISOString();
 const usage = (input: number, read: number, write: number, output: number) => ({ input_tokens: input, cache_read_input_tokens: read, cache_creation_input_tokens: write, output_tokens: output });
 const user = (text: string, s: number) => line({ type: "user", uuid: `u${s}`, timestamp: at(s), message: { role: "user", content: text } });
 const reply = (id: string, s: number, u: ReturnType<typeof usage>) => line({ type: "assistant", uuid: `a${s}`, timestamp: at(s), message: { id, role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "ok" }], usage: u } });
 
-describe("claude-code: usage", () => {
+describe("claude: usage", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-usage-"));
   const cwd = join(dir, "work");
   const config = join(dir, "config");

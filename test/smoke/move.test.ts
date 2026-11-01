@@ -1,5 +1,5 @@
 // `pagent mv` (SPEC 13.9): a node moves with everything it has. Its folder (code, data, its agents' state), its agents'
-// sessions (the claude-code runner's "move" op, with a stand-in for Claude Code in an isolated CLAUDE_CONFIG_DIR), the
+// sessions (the claude runner's "move" op, with a stand-in for Claude Code in an isolated CLAUDE_CONFIG_DIR), the
 // app's references to it, its message route and its keys. An instance of a dynamic page moves to another address of
 // that page; `pagent rm` removes one. Refused while an agent there is in a turn.
 import assert from "node:assert/strict";
@@ -27,7 +27,7 @@ describe("pagent mv", () => {
           fakePage({ bot: {} }, `<div>{String(useData("~/notes/items.json")[0])}</div>`).replace("export const agents", `import { useData } from "pagent";\nimport { list } from "~/notes/actions";\nexport const ask = "/notes#main";\nexport const agents`),
         "actions.ts": `"use server";\nimport { nodes } from "pagent/server";\nexport async function sessions() {\n  return (await nodes.instances("/studio/[id]")).map((i) => i.path + " " + i.params.id).join(", ");\n}\n`,
         "lib/format.ts": `export const format = (s: string) => s.trim();\n`,
-        // A folder agent on the claude-code runner (headless turns), its instructions naming its own address.
+        // A folder agent on the claude runner (headless turns), its instructions naming its own address.
         "notes/page.tsx": `import { format } from "../lib/format";\nexport const agents = { main: { cli: "claude", tui: false, instructions: "_agent.md" } };\nexport default function Notes() { return <div>{format(" notes ")}</div>; }\n`,
         "notes/_agent.md": "You keep /notes (its items.json). Hand things up with `pagent tell ..`.\n",
         "notes/actions.ts": `"use server";\nexport async function list() { return []; }\n`,

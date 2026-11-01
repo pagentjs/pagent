@@ -3,7 +3,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { engine } from "../engine.ts";
 import type { AgentDecl } from "../extract.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
@@ -57,19 +57,36 @@ export async function invoke(script: string, input: Record<string, unknown>, cwd
 }
 
 /**
- * What a runner says it does (its "describe" op), asked once per runner. The core knows no harness by name: this is
- * all it goes by.
- *   turns: how a turn reaches the harness. "tui": typed into the agent's native TUI, which the runner can follow
+ * What a runner says it is and does (its "describe" op: runners/src/lib/contract.ts, Describe), asked once per runner.
+ * The core knows no harness by name: this is all it goes by.
+ *   harness: what an agent's `cli` names it by (the runner's name) and what people call it.
+ *   turns: how a turn reaches the harness. "tui": typed into the agent's native TUI, which the runner follows
  *     ("interactive" and "follow" ops), unless the agent is declared tui: false; "thread": sent to a long-lived
- *     session on a thread that a TUI shares ("service", "session"); "headless" (and a runner that says nothing): one
- *     process per turn ("ask").
+ *     session on a thread that a TUI may share ("service", "session"); "headless": one process per turn ("ask").
+ *   ops: what it answers. An optional op it does not answer is never asked for; the engine does without (OPS says how).
+ *   interject: a message sent during a turn goes into that turn (typed into the busy TUI, steered into the thread).
+ *   sessions: where an agent's session is found when it adopts none: "folder", its harness's latest in the folder it
+ *     works in (Claude Code's --continue), so two agents of one harness there would share it; "agent", one the runner
+ *     keeps for each agent (in its stateDir). Not said: "folder" (nodes.ts checks a node's agents by it).
  *   outerSession: pagent started from inside this harness's own session carries that session's variables, which are
  *     not the user's settings and must not reach the harnesses pagent starts (shell-env.ts).
- *   strangers: it can answer a stranger in a one-off turn with no tools, a low output cap and no session kept (the
- *     "stranger" op, SPEC 13.7); a runner that cannot does not answer strangers at all.
+ * describe is optional: a runner that runs but does not answer it (a minimal headless runner of an app's own, `ask` and
+ * `history` only) is headless with the ops every headless runner answers, named by its file. One that cannot be found
+ * or started can do nothing: no ops, headless (whose turn then says why). described: it answered describe.
  */
-export type Capabilities = { turns: "tui" | "thread" | "headless"; outerSession?: OuterSession; strangers?: boolean };
+export type Capabilities = { harness: { id: string; title: string }; turns: Turns; ops: Set<Op>; interject: boolean; sessions: Sessions; outerSession?: OuterSession; described?: boolean };
 const described = new Map<string, Promise<Capabilities>>();
+const NOTHING = (id: string): Capabilities => ({ harness: { id, title: id }, turns: "headless", ops: new Set(), interject: false, sessions: "folder" });
+const MINIMAL = (id: string): Capabilities => ({ harness: { id, title: id }, turns: "headless", ops: new Set(requiredOps("headless")), interject: false, sessions: "folder" });
+
+// The contract's ops, as runners/src/lib/contract.ts (OPS) has them (the core is built apart from the runners, so the
+// list is here too; test/unit/contract.test.ts checks the two agree): the ones a runner always answers by how its
+// turns go, and the optional ones, answered when its describe lists them.
+export type Turns = "tui" | "thread" | "headless";
+export type Sessions = "folder" | "agent";
+export type Op = "describe" | "ask" | "history" | "last" | "info" | "usage" | "trajectory" | "holder" | "move" | "stranger" | "interactive" | "follow" | "service" | "session";
+export const OPTIONAL_OPS: Op[] = ["last", "info", "usage", "trajectory", "holder", "move", "stranger", "interactive", "service"];
+export const requiredOps = (turns: Turns): Op[] => ["describe", "history", ...(turns === "thread" ? (["session"] as Op[]) : (["ask"] as Op[])), ...(turns === "tui" ? (["follow"] as Op[]) : [])];
 
 function capabilities(script: string): Promise<Capabilities> {
   let caps = described.get(script);
@@ -77,11 +94,23 @@ function capabilities(script: string): Promise<Capabilities> {
     caps = (async () => {
       let said: any = null;
       // In this process's own environment: what runners say decides how the harness's is made.
-      await invoke(script, { op: "describe" }, homedir(), (e) => e.type === "describe" && (said = e), undefined, process.env).catch(() => 1);
-      const turns = said?.turns === "tui" || said?.turns === "thread" ? (said.turns as Capabilities["turns"]) : "headless";
-      const o = said?.outerSession;
+      const code = await invoke(script, { op: "describe" }, homedir(), (e) => e.type === "describe" && (said = e), undefined, process.env).catch(() => null);
+      const name = basename(script).replace(/\.[jt]s$/, "");
+      if (!said) {
+        // Not kept unless it ran and ended well: a runner that failed (could not start, a moment's error) is asked
+        // again next time, not taken for what it is not until the server restarts.
+        if (code !== 0 && described.get(script) === caps) described.delete(script);
+        // It ran and said nothing of itself: a minimal headless runner (describe is optional). It never ran: nothing.
+        return code === null ? NOTHING(name) : MINIMAL(name);
+      }
+      const turns: Turns = said.turns === "tui" || said.turns === "thread" ? said.turns : "headless";
+      const listed: unknown[] = Array.isArray(said.ops) ? said.ops : [];
+      const ops = new Set<Op>([...requiredOps(turns), ...OPTIONAL_OPS.filter((op) => listed.includes(op))]);
+      const o = said.outerSession;
       const outer = o && typeof o.marker === "string" && typeof o.prefix === "string" ? { marker: o.marker, prefix: o.prefix, keep: Array.isArray(o.keep) ? o.keep.map(String) : [] } : undefined;
-      return { turns, ...(outer ? { outerSession: outer } : {}), ...(said?.strangers === true ? { strangers: true } : {}) };
+      const harness = { id: String(said.harness?.id ?? name), title: String(said.harness?.title ?? said.harness?.id ?? name) };
+      const sessions: Sessions = said.sessions === "agent" ? "agent" : "folder";
+      return { harness, turns, ops, interject: said.interject === true, sessions, ...(outer ? { outerSession: outer } : {}), described: true };
     })();
     described.set(script, caps);
   }
@@ -93,17 +122,20 @@ export async function capabilitiesOf(decl: AgentDecl): Promise<Capabilities> {
   try {
     return await capabilities(runnerScript(decl.runner));
   } catch {
-    return { turns: "headless" };
+    return NOTHING(decl.runner);
   }
 }
 
 /** How an agent's turns reach its harness (a runner that cannot be found runs none: headless, which then says so). */
-export async function turnsOf(decl: AgentDecl): Promise<Capabilities["turns"]> {
-  try {
-    return (await capabilities(runnerScript(decl.runner))).turns;
-  } catch {
-    return "headless";
-  }
+export const turnsOf = async (decl: AgentDecl): Promise<Turns> => (await capabilitiesOf(decl)).turns;
+
+/** Whether the agent's runner answers an op (runners/src/lib/contract.ts, OPS). */
+export const canDo = async (decl: AgentDecl, op: Op): Promise<boolean> => (await capabilitiesOf(decl)).ops.has(op);
+
+/** The harnesses there are: each of the engine's runners, as it names its harness (what `cli` and the settings take). */
+export async function harnesses(): Promise<{ id: string; title: string }[]> {
+  const all = await Promise.all(engine.runners().map((name) => capabilities(engine.runner(name))));
+  return all.filter((c) => c.described).map((c) => c.harness); // one that did not describe itself is none
 }
 
 // The harness environment leaves out the variables of any harness session pagent was started from: the engine's own
@@ -121,6 +153,7 @@ export async function declOf(ctx: Ctx, ref: AgentRef): Promise<AgentDecl | undef
   return (await ctx.nodes.declarations(ref.node)).manifest.agents.find((a) => a.name === ref.agent);
 }
 
+/** The declaration of an agent about to run (a turn, its terminal, its session). */
 export async function agentDecl(ctx: Ctx, ref: AgentRef): Promise<AgentDecl> {
   const decl = await declOf(ctx, ref);
   if (!decl) throw new Error(`node ${ref.node} has no agent "${ref.agent}"`);

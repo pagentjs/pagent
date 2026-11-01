@@ -1,7 +1,9 @@
 // Importing another server's MCP App as a component: `import Weather from "mcp://127.0.0.1:3001/mcp#show_forecast"`.
 // Connect to the server, call its UI tool, read the ui:// resource, and run it in a sandboxed iframe through
-// ext-apps' AppBridge, forwarding the app's tool calls and resource reads to that server.
+// ext-apps' AppBridge, forwarding the app's tool calls and resource reads to that server. It is told the theme and the
+// language the app is shown in (the host context), and each change of them.
 import { useEffect, useRef, useState } from "react";
+import { useLanguage, useTheme } from "@pagent/bridge";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
@@ -20,6 +22,11 @@ export function McpAppFrame({ source, args = {} }: { source: string; args?: Reco
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(240);
   const [error, setError] = useState<string | null>(null);
+  const theme = useTheme();
+  const locale = useLanguage();
+  const context = useRef({ theme, locale });
+  context.current = { theme, locale };
+  const bridged = useRef<AppBridge | null>(null);
 
   useEffect(() => {
     let closed = false;
@@ -37,7 +44,7 @@ export function McpAppFrame({ source, args = {} }: { source: string; args?: Reco
       const result = await client.callTool({ name: show.name, arguments: args });
       if (closed || !ref.current) return;
 
-      bridge = new AppBridge(null, { name: "pagent", version: "0.0.1" }, { serverTools: {}, serverResources: {} } as never);
+      bridge = new AppBridge(null, { name: "pagent", version: "0.0.1" }, { serverTools: {}, serverResources: {} } as never, { hostContext: { ...context.current } });
       bridge.oncalltool = async (params) => (await client.callTool(params)) as never;
       bridge.onreadresource = async (params) => (await client.readResource(params)) as never;
       bridge.onsizechange = ({ height: h }) => h && setHeight(Math.ceil(h));
@@ -49,13 +56,20 @@ export function McpAppFrame({ source, args = {} }: { source: string; args?: Reco
       frame.srcdoc = html;
       await new Promise((r) => frame.addEventListener("load", r, { once: true }));
       await bridge.connect(new PostMessageTransport(frame.contentWindow!, frame.contentWindow!));
+      if (closed) return;
+      bridged.current = bridge;
+      // A change while it connected (the effect below had no bridge to tell): the context now (unchanged: nothing sent).
+      bridge.setHostContext({ ...context.current });
     })().catch((e) => !closed && setError(String(e?.message ?? e)));
     return () => {
       closed = true;
+      bridged.current = null;
       void bridge?.close();
       void client.close();
     };
   }, [source, JSON.stringify(args)]);
+  // The reader turned light or dark, or picked another language: the app hears it (host-context-changed).
+  useEffect(() => bridged.current?.setHostContext({ theme, locale }), [theme, locale]);
 
   if (error) return <div className="pagent-error">{source}: {error}</div>;
   return <iframe ref={ref} title={source} sandbox="allow-scripts allow-forms" style={{ width: "100%", height, border: 0, display: "block" }} />;

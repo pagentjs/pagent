@@ -76,6 +76,7 @@ const usage = () => {
       "       pagent mv <node> <new path> [--root <app-root>]          move a node with its data, state, sessions and references\n" +
       "       pagent key create <node> [--name n] [--ttl 1h] [--root …]  a key to the app's routes under <node> (shown once)\n" +
       "       pagent key list | revoke <name> [--root …]\n" +
+      "       pagent docs [topic[#section]]                            the pagent skill's chapters, as agents read them\n" +
       "An app's agents have more commands (`pagent --help` in an agent's shell).",
   );
   process.exit(1);
@@ -204,4 +205,13 @@ if (env("TOKEN")) {
     if (arg === "restart") console.log("the next `pagent serve` starts the new one");
   }
   conn.end();
+} else if (command === "docs") {
+  // The engine skill's chapters (docs.ts), as an agent's `pagent docs` prints them: no app needed.
+  const { docs } = await import("./docs.ts");
+  try {
+    console.log(docs(arg));
+  } catch (e) {
+    console.error(`pagent docs: ${(e as Error).message}`);
+    process.exit(1);
+  }
 } else usage();
