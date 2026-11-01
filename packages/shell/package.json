@@ -8,14 +8,15 @@
     "build": "vite build"
   },
   "dependencies": {
-    "@pagent/bridge": "workspace:*",
     "@modelcontextprotocol/ext-apps": "^2.0.3",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@pagent/bridge": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "ai": "^7.0.136",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "uqr": "0.1.2"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",

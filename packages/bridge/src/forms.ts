@@ -4,6 +4,7 @@
 // message pagent sent the agent: "The user filled in the Secure Form "…": …", or "cancelled"). While it is open, the
 // agent's pending questions say so. The value itself is in none of these.
 import type { UIMessage } from "ai";
+import type { ToolMeta } from "./contract.ts";
 
 export type FormAsk = { question: string; secret: boolean; into?: string; fields: string[] };
 export type FormState = "waiting" | "submitted" | "cancelled" | "failed";
@@ -72,8 +73,11 @@ export function formAskOf(command: unknown): FormAsk | null {
   return { question: pos.join(" ").trim(), secret, ...(into ? { into } : {}), fields };
 }
 
-/** The shell command of a tool call (Claude Code's Bash, Codex's shell), if it is one. */
-export const commandOf = (input: unknown): unknown => (input && typeof input === "object" ? (input as { command?: unknown }).command : undefined);
+/** The shell command of a tool call, if it runs one (its runner says so: ToolMeta's kind "command"). */
+export const commandOf = (call: { toolMetadata?: unknown }): string | undefined => {
+  const m = call.toolMetadata as ToolMeta | undefined;
+  return m?.kind === "command" ? m.command : undefined;
+};
 
 const OUTCOME = /^(?:\(from pagent\)\s*)?The user (filled in|cancelled) the (?:Secure Form|form) "([\s\S]*?)"[:.;]/;
 
@@ -103,7 +107,7 @@ export function formStates(messages: UIMessage[], open: { question: string }[], 
     }
     for (const p of m.parts as any[]) {
       if (p.type !== "dynamic-tool") continue;
-      const ask = formAskOf(commandOf(p.input));
+      const ask = formAskOf(commandOf(p));
       if (!ask) continue;
       const out = p.state === "output-available" ? String(typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? "")) : "";
       if (p.state === "output-error" || /^pagent ask-user:/.test(out.trim())) states.set(p.toolCallId, "failed");

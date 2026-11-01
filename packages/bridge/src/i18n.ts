@@ -1,10 +1,12 @@
 // The engine's own words on the page, in one table: the shell's and the conversation surfaces' (buttons, hints,
 // placeholders, notes) and what an agent is doing (core: agents/status.ts says that as a key of this table and its
-// values). They are in the app's language, its home page's `metadata.lang` ("zh-CN"), so they read as part of its
-// pages; in English when it declares none, or one the table has no words for. Another language is one more column.
-// What agents and pages write is never translated.
+// values). They are in the language the app is read in, the same one its own words follow (useLanguage): the reader's
+// choice (setLanguage), else the app's (its home page's `metadata.lang`, "zh-CN"), else the browser's; so they read as
+// part of its pages. English when that is one the table has no words for. Another language is one more column. What
+// agents and pages write is never translated.
 import { useSyncExternalStore, type ReactNode } from "react";
-import type { Activity, Say } from "./contract.ts";
+import type { Activity, Say, ToolKind, ToolMeta } from "./contract.ts";
+import { setSetting, settingsNow, subscribeSettings } from "./settings.ts";
 
 const en = {
   // What an agent is doing (core: agents/status.ts, the same words in English: test/unit/i18n.test.ts)
@@ -70,16 +72,27 @@ const en = {
   "question.permission": "{who} asks for permission",
   "question.waiting": "{who} is waiting for your answer",
   "question.type": "Or type an answer…",
+  "question.plan": "{who} has a plan for you to approve",
+  "question.planMode": "{who} wants to plan before it changes anything",
+  "question.dialog": "{who} is stuck on a dialog in its terminal",
+  "question.planType": "Or say what to change in it…",
   "ask.allow": "Allow {tool}?",
   "ask.allowThis": "Allow this?",
   "ask.allowThisTool": "Allow this tool?",
   "ask.allowYes": "Allow",
   "ask.deny": "Deny",
+  "ask.plan": "Go ahead with this plan?",
+  "ask.planYes": "Approve",
+  "ask.planKeep": "Keep planning",
   "ask.inTerminal": "(the prompt is in its terminal)",
   "ask.trust": "Trust this folder for {harness}?",
   "ask.trustDetail": "{dir}\n\n{harness} asks this the first time it works in a folder. Trusted, it can read, edit and run files here (each action still subject to its permissions).",
   "ask.trustYes": "Trust",
   "ask.notNow": "Not now",
+  "ask.dialog": "Waiting in its terminal: {title}",
+  "ask.dismiss": "Dismiss (Esc)",
+  "ask.enter": "Continue (Enter)",
+  "ask.option": "{option}",
   "into.env": "this app's .env file, as {name}",
   "into.app": "the \"{field}\" field in {app}",
   "form.secure": "Secure Form",
@@ -126,6 +139,12 @@ const en = {
   "console.stopHint": "Stop the turn in progress (Esc in its terminal)",
   "console.stop": "Stop",
   "console.stopping": "Stopping…",
+  "console.headless": "Working without its terminal for now ({why}), so a message waits for its turn to end.",
+  "console.headlessRetry": "Its terminal is tried again in {min} min, or when you open it.",
+  "console.headlessOpen": "Opening its terminal brings it back.",
+  "console.stale": "Its settings changed since its terminal started; the terminal restarts with them before its next message.",
+  "console.updated": "Its CLI was updated since its terminal started; the terminal restarts on the new version before its next message.",
+  "console.restart": "Restart now",
   "console.resumeHint": "Same session from the CLI:\n{command}",
   "console.resume": "Resume in CLI",
   "console.copied": "Copied",
@@ -136,6 +155,18 @@ const en = {
 
   // The conversation
   "chat.thinking": "Thinking",
+  "plan.title": "Plan",
+  "plan.asking": "waiting for your approval",
+  "plan.approved": "approved",
+  "plan.declined": "not approved: kept planning",
+  "plan.proposed": "proposed",
+  "plan.progress": "{done} of {n} done",
+  "plan.step.pending": "to do",
+  "plan.step.active": "under way",
+  "plan.step.done": "done",
+  "plan.added": "new step: {text}",
+  "plan.updated": "step {id}: {what}",
+  "plan.removed": "removed",
   "chat.from": "from {who}",
   "chat.image": "an image",
   "chat.fullSize": "Open full size",
@@ -183,6 +214,26 @@ const en = {
   "rail.rename": "Rename",
   "rail.delete": "Delete",
   "rail.confirmDelete": "Delete {title}, with its data and its agents' state?",
+  "rail.resize": "Drag to make the list wider or narrower; double-click for its usual width",
+  "settings.title": "Settings",
+  "settings.where": "The same in every pagent app on this computer.",
+  "settings.general": "General",
+  "settings.lang": "Language",
+  "settings.lang.auto": "Automatic",
+  "settings.lang.autoHint": "The app's language, else your browser's",
+  "settings.theme": "Theme",
+  "settings.theme.system": "System",
+  "settings.theme.light": "Light",
+  "settings.theme.dark": "Dark",
+  "settings.agents": "Agents",
+  "settings.harness": "Default harness",
+  "settings.harnessHint": "What a new agent runs when its app does not say (a new session, too). One that has started keeps its own.",
+  "settings.app": "This app",
+  "settings.phone": "Open on a phone",
+  "settings.phone.hint": "Scan with the phone's camera: it opens this page and keeps the key. Then Share → Add to Home Screen, and it opens like an app.",
+  "settings.phone.lan": "Same Wi-Fi",
+  "settings.phone.tailnet": "Tailscale",
+  "settings.phone.off": "This app listens on this computer only. Start it with HOST=0.0.0.0 to open it on a phone.",
   "app.notifyBlocked": "Notifications are blocked for this site in the browser's settings",
   "app.notifyOn": "Notifying you when an agent finishes or needs you while you are elsewhere (click to stop)",
   "app.notifyOff": "Notify me when an agent finishes or needs me while I am elsewhere",
@@ -197,6 +248,7 @@ const en = {
   "terminal.fork": "Fork a copy",
   "terminal.retry": "I closed it, retry",
   "terminal.open": "Open anyway",
+  "terminal.none": "{harness} has no terminal of its own here: its session is in the conversation.",
 };
 
 export type Key = keyof typeof en;
@@ -263,16 +315,27 @@ const zhCN: Words = {
   "question.permission": "{who} 在请求权限",
   "question.waiting": "{who} 在等你回答",
   "question.type": "或者直接输入回答…",
+  "question.plan": "{who} 拟了一个计划，等你批准",
+  "question.planMode": "{who} 想先做计划，再动手改",
+  "question.dialog": "{who} 卡在终端里的一个对话框上",
+  "question.planType": "或者说说哪里要改…",
   "ask.allow": "允许 {tool} 吗？",
   "ask.allowThis": "允许吗？",
   "ask.allowThisTool": "允许使用这个工具吗？",
   "ask.allowYes": "允许",
   "ask.deny": "拒绝",
+  "ask.plan": "按这个计划开始吗？",
+  "ask.planYes": "批准",
+  "ask.planKeep": "继续计划",
   "ask.inTerminal": "（提示在它的终端里）",
   "ask.trust": "信任这个文件夹，让 {harness} 在这里工作吗？",
   "ask.trustDetail": "{dir}\n\n{harness} 第一次在一个文件夹里工作时会问这个。信任之后，它可以在这里读、改和运行文件（每个操作仍然受它的权限约束）。",
   "ask.trustYes": "信任",
   "ask.notNow": "暂不",
+  "ask.dialog": "它的终端里有个对话框在等：{title}",
+  "ask.dismiss": "关掉（Esc）",
+  "ask.enter": "继续（Enter）",
+  "ask.option": "{option}",
   "into.env": "这个应用的 .env 文件（{name}）",
   "into.app": "“{app}”里的“{field}”栏",
   "form.secure": "安全表单",
@@ -318,6 +381,12 @@ const zhCN: Words = {
   "console.stopHint": "停止正在进行的这一轮（等于在它的终端里按 Esc）",
   "console.stop": "停止",
   "console.stopping": "正在停止…",
+  "console.headless": "它现在没在终端里跑（{why}），所以消息要等这一轮结束才发得进去。",
+  "console.headlessRetry": "{min} 分钟后会再试着打开终端，你打开它的终端也行。",
+  "console.headlessOpen": "打开它的终端就能恢复。",
+  "console.stale": "它的设置在终端打开之后改过了；下一条消息之前，终端会按新设置重开。",
+  "console.updated": "它的 CLI 在终端打开之后更新过了；下一条消息之前，终端会用新版本重开。",
+  "console.restart": "现在重开",
   "console.resumeHint": "在命令行里打开同一个会话：\n{command}",
   "console.resume": "在命令行继续",
   "console.copied": "已复制",
@@ -327,6 +396,18 @@ const zhCN: Words = {
   "loading": "正在加载…",
 
   "chat.thinking": "思考过程",
+  "plan.title": "计划",
+  "plan.asking": "等你批准",
+  "plan.approved": "已批准",
+  "plan.declined": "没批准：继续计划",
+  "plan.proposed": "提出的计划",
+  "plan.progress": "完成 {done} / {n}",
+  "plan.step.pending": "待做",
+  "plan.step.active": "进行中",
+  "plan.step.done": "已完成",
+  "plan.added": "新步骤：{text}",
+  "plan.updated": "第 {id} 步：{what}",
+  "plan.removed": "已删除",
   "chat.from": "来自 {who}",
   "chat.image": "一张图片",
   "chat.fullSize": "查看原图",
@@ -372,6 +453,26 @@ const zhCN: Words = {
   "rail.rename": "重命名",
   "rail.delete": "删除",
   "rail.confirmDelete": "删除「{title}」，连同它的数据和助手的状态？",
+  "rail.resize": "拖动调整列表宽度，双击恢复默认",
+  "settings.title": "设置",
+  "settings.where": "这台电脑上所有 pagent 应用通用。",
+  "settings.general": "通用",
+  "settings.lang": "语言",
+  "settings.lang.auto": "自动",
+  "settings.lang.autoHint": "应用的语言，没有就跟浏览器",
+  "settings.theme": "主题",
+  "settings.theme.system": "跟随系统",
+  "settings.theme.light": "浅色",
+  "settings.theme.dark": "深色",
+  "settings.agents": "Agent",
+  "settings.harness": "默认 harness",
+  "settings.harnessHint": "应用没指定时，新的 agent 用它（新会话也是）。已经开始的保持原来的。",
+  "settings.app": "这个应用",
+  "settings.phone": "在手机上打开",
+  "settings.phone.hint": "用手机相机扫一下：打开的就是这一页，钥匙也留在手机上了。再点「分享」→「添加到主屏幕」，以后就像 app 一样打开。",
+  "settings.phone.lan": "同一个 Wi-Fi",
+  "settings.phone.tailnet": "Tailscale",
+  "settings.phone.off": "这个应用只在本机监听。用 HOST=0.0.0.0 启动，手机才能打开。",
   "app.notifyBlocked": "浏览器设置里屏蔽了这个网站的通知",
   "app.notifyOn": "你不在这里时，助手做完或需要你都会通知你（点一下停止）",
   "app.notifyOff": "我不在这里时，助手做完或需要我就通知我",
@@ -386,6 +487,7 @@ const zhCN: Words = {
   "terminal.fork": "另开一个副本",
   "terminal.retry": "我关掉了，重试",
   "terminal.open": "仍然打开",
+  "terminal.none": "{harness} 在这里没有自己的终端：它的会话就在对话里。",
 };
 
 /** Every language of the table, by its tag. */
@@ -394,24 +496,9 @@ export type Lang = keyof typeof WORDS;
 
 /**
  * A tool call's chip in a conversation: in English the tool as its harness names it ("Bash", as it always was); in a
- * language with words for it, what it does ("运行命令"). The tools grouped as core's agents/status.ts groups them.
+ * language with words for it, what it does ("运行命令"), by what its runner says the call is (ToolMeta's kind).
  */
-const TOOL_KINDS: [RegExp, string][] = [
-  [/^(bash|shell|exec_command|local_shell|powershell)$/, "command"],
-  [/^(read|view_image)$/, "read"],
-  [/^write$/, "write"],
-  [/^(edit|multiedit|notebookedit|apply_patch)$/, "edit"],
-  [/^(grep|glob|ls)$/, "search"],
-  [/^webfetch$/, "web"],
-  [/^(websearch|web_search)$/, "webSearch"],
-  [/^(agent|task|spawn_agent)$/, "agent"],
-  [/^(send_input|wait|resume_agent|close_agent)$/, "subagents"],
-  [/^skill$/, "skill"],
-  [/^toolsearch$/, "toolSearch"],
-  [/^(todowrite|update_plan|taskcreate|taskupdate)$/, "plan"],
-  [/^askuserquestion$/, "ask"],
-];
-const TOOL_WORDS: Partial<Record<Lang, Record<string, string>>> = {
+const TOOL_WORDS: Partial<Record<Lang, Partial<Record<ToolKind, string>>>> = {
   "zh-CN": {
     command: "运行命令",
     read: "读文件",
@@ -420,11 +507,13 @@ const TOOL_WORDS: Partial<Record<Lang, Record<string, string>>> = {
     search: "查找文件",
     web: "读网页",
     webSearch: "上网搜索",
-    agent: "子助手",
+    subagent: "子助手",
     subagents: "协调子助手",
     skill: "加载技能",
     toolSearch: "找工具",
-    plan: "更新计划",
+    steps: "更新计划",
+    proposal: "提出计划",
+    planMode: "先做计划",
     ask: "问你",
   },
 };
@@ -438,34 +527,30 @@ export function langOf(tag?: string | null): Lang {
   return (Object.keys(WORDS) as Lang[]).find((l) => l.toLowerCase() === t) ?? ALIASES[t] ?? "en";
 }
 
-// The language in effect: the reader's choice (setLanguage, remembered in this browser), else the app's (its home
-// page's metadata.lang), else, for what the app writes itself, the browser's. The engine's words follow the first two
-// (English when neither says one, or one the table has no column for); `tag` is the one the app's own words go by.
-const CHOSEN = "pagent.lang.chosen";
-const browser = typeof window !== "undefined";
-const stored = (): string | null => {
-  try {
-    return browser ? localStorage.getItem(CHOSEN) : null;
-  } catch {
-    return null;
-  }
-};
+// The language in effect, for the engine's words and the app's own alike: the reader's choice (setLanguage: one of the
+// person's settings, the same in every app of theirs: settings.ts), else the app's (its home page's metadata.lang),
+// else the browser's. `tag` is it as a tag, which the app's own words go by; `current`, the table's column for it
+// (English when the table has none).
 const reader = () => (typeof navigator !== "undefined" && navigator.language) || "en";
 let app: string | null = null;
-let chosen: string | null = stored();
-let current: Lang = langOf(chosen);
+let chosen: string | null = settingsNow().lang;
 let tag = chosen ?? reader();
+let current: Lang = langOf(tag);
+let told = chosen; // the choice components last heard of (useLanguage({ chosen: true }))
 const listeners = new Set<() => void>();
 const subscribe = (cb: () => void) => (listeners.add(cb), () => void listeners.delete(cb));
 
 function update() {
-  const next = langOf(chosen ?? app);
+  chosen = settingsNow().lang;
   const nextTag = chosen ?? app ?? reader();
-  if (next === current && nextTag === tag) return;
+  const next = langOf(nextTag);
+  if (next === current && nextTag === tag && told === chosen) return;
   current = next;
   tag = nextTag;
+  told = chosen;
   for (const l of listeners) l();
 }
+subscribeSettings(update); // chosen on this page, in another tab, in another app
 
 /** For the shell: the app's language (its home page's metadata.lang), as soon as it knows it. */
 export function setAppLanguage(lang?: string | null) {
@@ -475,14 +560,11 @@ export function setAppLanguage(lang?: string | null) {
 
 /**
  * The reader picks a language ("zh-CN", "en"): the engine's words and the app's own (useLanguage) follow it, over the
- * app's metadata.lang, and this browser remembers it. null: back to the app's.
+ * app's metadata.lang and the browser's, in every app of theirs (it is one of their settings: setSetting("lang")).
+ * null: back to each app's (else the browser's).
  */
-export function setLanguage(lang: string | null) {
-  chosen = lang || null;
-  try {
-    if (browser) chosen ? localStorage.setItem(CHOSEN, chosen) : localStorage.removeItem(CHOSEN);
-  } catch {}
-  update();
+export function setLanguage(lang: string | null): Promise<void> {
+  return setSetting("lang", lang || null);
 }
 
 /** The reader's choice (setLanguage), if they made one. */
@@ -490,10 +572,15 @@ export const chosenLanguage = () => chosen;
 
 /**
  * The language the app is read in now, as a tag ("zh-CN", "en-GB"): the reader's choice, else the app's metadata.lang,
- * else the browser's. A component that calls this renders again when it changes (the engine's words do too).
+ * else the browser's. The engine's words are in it too (in English when the table has no words for it). A component
+ * that calls this renders again when it changes. { chosen: true }: the reader's choice alone (null: none made), for a
+ * settings page that shows what was picked.
  */
-export function useLanguage(): string {
-  return useSyncExternalStore(subscribe, () => tag, () => tag);
+export function useLanguage(): string;
+export function useLanguage(opts: { chosen: true }): string | null;
+export function useLanguage(opts?: { chosen: true }): string | null {
+  const get = opts?.chosen ? () => told : () => tag;
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 const fill = (words: string, values?: Record<string, string | number>) => words.replace(/\{(\w+)\}/g, (m, k: string) => (values && k in values ? String(values[k]) : m));
@@ -528,12 +615,13 @@ export function sayIn(say: Say, lang: Lang = current): string | null {
 /** What an agent is doing, in the current language (from its `say`); without one, as its label says it. */
 export const labelOf = (doing: Activity): string => (doing.say ? sayIn(doing.say) : null) ?? doing.label;
 
-/** A tool, as a conversation's chip shows it (TOOL_KINDS); an MCP server's tool, in another language: the server. */
-export function toolWord(toolName: string): string {
-  const name = toolName.replace(/^mcp__/, "");
+/** A tool call, as a conversation's chip shows it (TOOL_WORDS); an MCP server's tool, in another language: the server. */
+export function toolWord(call: { toolName: string; toolMetadata?: unknown }): string {
+  const name = call.toolName.replace(/^mcp__/, "");
   const words = TOOL_WORDS[current];
   if (!words) return name;
-  const kind = TOOL_KINDS.find(([re]) => re.test(name.toLowerCase()))?.[1];
-  if (kind && words[kind]) return words[kind];
-  return /^(.+?)__/.exec(name)?.[1].replace(/^plugin_[^_]+_/, "") ?? name;
+  const meta = call.toolMetadata as ToolMeta | undefined;
+  const word = meta?.kind ? words[meta.kind] : undefined;
+  if (word) return word;
+  return meta?.kind === "mcp" && meta.server ? meta.server : name;
 }

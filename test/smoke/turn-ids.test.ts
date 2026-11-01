@@ -2,7 +2,7 @@
 // in /_pagent/history: the console's ChatTurn.id), while the turn runs, after it, and after the server restarts. A
 // person's message keeps the id their conversation gave it; anyone else's, the engine's. Each kind of runner: the fake
 // headless one says no transcript id (the engine finds the message by its words), the fake thread says it as Codex does,
-// the claude-code runner finds it in the transcript at the turn's end (a stand-in for Claude Code, an isolated
+// the claude runner finds it in the transcript at the turn's end (a stand-in for Claude Code, an isolated
 // CLAUDE_CONFIG_DIR), and its follow op (a turn typed into the TUI) says it as the turn's message comes in.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -88,7 +88,7 @@ describe("one id a turn: the conversation's and the turn trigger's", () => {
     assert.deepEqual(ids("thread").pending, []);
     assert.ok(Object.values(ids("thread").ids).includes("sam-thread"));
   });
-  test("claude-code headless (its id found in the transcript at the turn's end)", async () => {
+  test("claude headless (its id found in the transcript at the turn's end)", async () => {
     await turns("/claude", false);
     assert.deepEqual(ids("claude").pending, []);
     assert.ok(Object.values(ids("claude").ids).includes("sam-claude"));
@@ -105,13 +105,13 @@ describe("one id a turn: the conversation's and the turn trigger's", () => {
   });
 });
 
-test("claude-code: a turn typed into the TUI says its message's id as it comes in, and a message it takes in for the next turn", async () => {
+test("claude: a turn typed into the TUI says its message's id as it comes in, and a message it takes in for the next turn", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "pagent-follow-")));
   const cwd = join(dir, "work");
   mkdirSync(cwd);
   const project = join(dir, "config", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
   mkdirSync(project, { recursive: true });
-  const child = spawn(process.execPath, [join(repo, "packages/runners/src/claude-code.ts")], { env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, "config") } });
+  const child = spawn(process.execPath, [join(repo, "packages/runners/src/claude.ts")], { env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, "config") } });
   child.stdin.end(JSON.stringify({ op: "follow", cwd, stateDir: join(dir, "state") }));
   const got: any[] = [];
   let rest = "";

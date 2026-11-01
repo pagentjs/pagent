@@ -2,13 +2,16 @@
 // on disk: there is no published copy. Versions are the agent's git commits (it commits before and after a UI
 // change, so a change can be reverted); the engine keeps none of its own.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { agentsOf } from "./agents-fn.ts";
+import { capabilitiesOf } from "./agents/runner.ts";
 import { compileFile, importedNode, serverModule, type Compiled } from "./compile.ts";
+import { dataPath, writeData } from "./data.ts";
 import { Deps } from "./deps.ts";
 import { broadcast } from "./events.ts";
 import { analyze, inherit, isServerFile, mergeManifest, serverExports, type Extracted } from "./extract.ts";
 import { madeOf, noteMade, shownPath } from "./made.ts";
+import { harnessOf } from "./settings.ts";
 import { codeOf, instanceKeyOf, listNodes, makeFolder, moduleListing, nodeDir, notMade, resolveRoute, type NodeCode, type NodeFile, type Params } from "./tree.ts";
 
 export type NodeInfo = {
@@ -123,8 +126,19 @@ export class Nodes {
       value = await this.readDeclarations(path, found);
       this.read.set(path, { generation, stamps, probes, value });
     }
-    // Callers may add to its errors (info): a copy of what is kept.
-    return { ...value, files: [...value.files], manifest: { ...value.manifest, errors: [...value.manifest.errors] } };
+    // Callers may add to its errors (info): a copy of what is kept. An agent declared without a cli runs the person's
+    // default harness, the one it took on its first turn once it had one (settings.ts): asked each time, as the default
+    // changes without any code changing.
+    // A relative cwd is where it points from here: "~/…" from the app's root (as in imports and skills), else from the
+    // node's folder; so an app whose agents work in folders beside it ("~/../agents/x") moves with them, drive and all.
+    // A runner of the app's own, given by a relative path, is found the same way ("~/_runners/cli.ts"), else beside the
+    // code that declares it (an instance's folder first, then the code it shadows).
+    const dir = resolve(this.root, `.${path}`);
+    const agents = value.manifest.agents.map((a) => {
+      const own = a.runner === "" ? { ...a, runner: harnessOf(dir, a.name), defaultHarness: true } : isRunnerPath(a.runner) ? { ...a, runner: runnerFrom(this.root, [dir, ...value.sources], a.runner) } : a;
+      return typeof own.cwd === "string" && !isAbsolute(own.cwd) ? { ...own, cwd: cwdFrom(this.root, dir, own.cwd) } : own;
+    });
+    return { ...value, files: [...value.files], manifest: { ...value.manifest, agents, errors: [...value.manifest.errors] } };
   }
 
   private async readDeclarations(path: string, found: NodeCode): Promise<Declarations> {
@@ -175,20 +189,25 @@ export class Nodes {
   }
 
   /**
-   * Make an instance of a dynamic page (its folder: tree.ts), as opening its page or `pagent tell --new` does; unless
-   * its agents function refuses its params (returns null, or throws), which is then the error. path: as its folder has
-   * it (canonical). by: who made it, when not the person opening its page (made.ts).
+   * Make an instance of a dynamic page (its folder: tree.ts), as opening its page, `pagent tell --new` and nodes.make
+   * do; unless its agents function refuses its params (returns null, or throws), which is then the error. path: as its
+   * folder has it (canonical). by: who made it, when not the person opening its page (made.ts). data: data files it is
+   * made with (name → content, as data.write takes it), there before anything reads it: its agents function, run again
+   * once it is made (agents-fn.ts keeps nothing from before), sees them.
    */
-  async make(path: string, by?: string): Promise<void> {
+  async make(path: string, by?: string, data: Record<string, unknown> = {}): Promise<void> {
     if (!notMade(this.root, path)) return;
+    for (const file of Object.keys(data)) dataPath(this.root, path, file); // a name that is no data file: nothing is made
     const d = await this.declarations(path);
     if (d.refused) throw new Error(d.refused);
     // The dynamic layers above it made with it (/studio/demo of /studio/[ws]), recorded too: a layout.tsx put in one
     // later shadows its dynamic folder's for that layer (tree.ts).
     const layers = (codeOf(this.root, path)?.layers ?? []).slice(0, -1).filter((l) => l.code !== l.path && !existsSync(nodeDir(this.root, l.path)));
     makeFolder(this.root, path);
+    for (const [file, content] of Object.entries(data)) writeData(this.root, path, file, content);
     for (const l of layers) noteMade(this.root, l.path, l.code);
     noteMade(this.root, path, d.code!, by);
+    this.read.delete(path); // what was read before it was made (its agents without its data)
     broadcast({ type: "code", path }); // a page more: navigation lists it, triggers arm for it
   }
 
@@ -219,11 +238,23 @@ export class Nodes {
     const { files, manifest, params, code, sources } = await this.declarations(path);
     const compiled = await Promise.all(files.map((f) => this.module(path, f)));
     for (const c of compiled) manifest.errors.push(...c.errors);
-    // The node's folder is one session: an agent working in it (no cwd of its own, no sessionId) continues the latest
-    // session there, so two of them would share it. One working elsewhere keeps a session of its own (runner.ts).
+    // The node's folder is one session per harness: an agent working in it (no cwd of its own, no sessionId) continues
+    // its harness's latest session there, so two of them on one harness would share it. Two harnesses keep theirs apart
+    // (Claude Code's and Codex's are in their own stores); a runner that keeps a session per agent (its describe says
+    // sessions: "agent") never shares one. One working elsewhere keeps a session of its own (runner.ts).
     const dir = resolve(this.root, `.${path}`);
     const inFolder = manifest.agents.filter((a) => !a.session && a.remote === undefined && (typeof a.cwd !== "string" || resolve(a.cwd) === dir));
-    if (inFolder.length > 1) manifest.errors.push(`agents ${inFolder.map((a) => a.name).join(", ")} work in the node's folder, so they would share its session; give each its own folder (a child node), a cwd or a sessionId`);
+    const byHarness = new Map<string, { title: string; names: string[] }>();
+    for (const a of inFolder) {
+      const { harness, sessions } = await capabilitiesOf(a);
+      if (sessions === "agent") continue;
+      const h = byHarness.get(harness.id) ?? { title: harness.title, names: [] };
+      byHarness.set(harness.id, { ...h, names: [...h.names, a.name] });
+    }
+    for (const { title, names } of byHarness.values()) {
+      if (names.length < 2) continue;
+      manifest.errors.push(`agents ${names.join(", ")} work in the node's folder on ${title}, so they would share its session there; give each its own folder (a child node), a cwd or a sessionId (a runner that keeps a session per agent says so in its describe: sessions: "agent")`);
+    }
     const shadowed = sources.slice(1).map((d) => "/" + relative(this.root, d));
     return { path, files, manifest, version: compiled.map((c) => c.hash).join("-") || "empty", ...(code ? { params, code } : {}), ...(shadowed.length ? { sources: shadowed } : {}) };
   }
@@ -262,4 +293,20 @@ export class Nodes {
   usersOf(file: string): string[] {
     return [...new Set([...(this.users.get(file) ?? [])].map((k) => k.slice(0, k.indexOf("\n"))))];
   }
+}
+
+/** An agent's declared cwd, absolute: "~" / "~/x" from the app's root, a relative one from its node's folder. */
+export const cwdFrom = (root: string, dir: string, cwd: string): string => (cwd === "~" || cwd.startsWith("~/") ? resolve(root, cwd.slice(2)) : resolve(dir, cwd));
+
+/** A runner given as a script (a path: "/…", "~/…", "./…", "x/y.ts"), not by an engine runner's name ("claude", "codex"). */
+export const isRunnerPath = (runner: string) => isAbsolute(runner) || runner.startsWith("~/") || runner.includes("/") || /\.(m?[jt]s)$/.test(runner);
+
+/**
+ * A runner script's path, absolute: "~/x" from the app's root; a relative one from the first of `dirs` that has it (the
+ * node's folder, then the folders of the code it shadows), else the node's; an absolute one as written.
+ */
+export function runnerFrom(root: string, dirs: string[], runner: string): string {
+  if (isAbsolute(runner)) return runner;
+  if (runner.startsWith("~/")) return resolve(root, runner.slice(2));
+  return dirs.map((d) => resolve(d, runner)).find((p) => existsSync(p)) ?? resolve(dirs[0], runner);
 }

@@ -72,7 +72,7 @@
     --pagent-terminal-bg: #0f0f0e;
   }
 }
-/* The same dark values, chosen explicitly (no switch in the UI yet; a page or a preset can set data-theme). */
+/* The same dark values, chosen explicitly: the reader's setTheme (bridge: theme.ts) sets data-theme on <html>. */
 :root[data-theme="dark"] {
   --pagent-bg: #151514; --pagent-chrome: #111110; --pagent-surface: #1c1c1a; --pagent-surface-2: #262624;
   --pagent-border: #2c2b28; --pagent-border-strong: #3b3a36; --pagent-text: #ecebe8; --pagent-muted: #a3a099;
@@ -175,6 +175,16 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
   position: fixed; left: 0; width: min(300px, 86vw);
   background: var(--pagent-surface); box-shadow: var(--pagent-shadow); animation: pagent-slide 200ms var(--pagent-ease);
 }
+/* The rail's edge, to drag (Nav.tsx: RailEdge): a thin strip over its border, the accent while it is held or focused. */
+.pagent-railedge {
+  position: fixed; top: 0; bottom: 0; left: calc(var(--pagent-rail-width) - 3px); z-index: 21;
+  width: 6px; cursor: col-resize; touch-action: none;
+}
+.pagent-railedge::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; transition: background-color 120ms var(--pagent-ease); }
+.pagent-railedge:hover::after, .pagent-railedge:focus-visible::after, :root[data-resizing] .pagent-railedge::after { background: var(--pagent-accent); }
+.pagent-railedge:focus-visible { outline: none; }
+/* While it is dragged: the cursor stays, and nothing on the page is selected along the way. */
+:root[data-resizing] { cursor: col-resize; user-select: none; }
 .pagent-scrim { position: fixed; inset: 0; z-index: 19; background: var(--pagent-scrim); animation: pagent-fade 200ms var(--pagent-ease); }
 @keyframes pagent-slide { from { transform: translateX(-16px); opacity: 0; } }
 @keyframes pagent-fade { from { opacity: 0; } }
@@ -223,6 +233,44 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-railname { display: flex; flex-direction: column; gap: 4px; padding: 4px 8px 6px; }
 .pagent-railname input { width: 100%; min-width: 0; padding: 3px 8px; font-size: 13px; line-height: 20px; }
 .pagent-railerror { display: block; padding-right: 8px; font-size: 12px; line-height: 16px; color: var(--pagent-danger); overflow-wrap: anywhere; }
+/* The shell's own, at the rail's bottom (Settings): it stays in sight while the list scrolls. */
+.pagent-railfoot { position: sticky; bottom: -16px; margin: auto -8px -16px; padding: 8px 8px 12px; background: inherit; border-top: 1px solid var(--pagent-border); }
+.pagent-railgear {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px;
+  border: 0; border-radius: var(--pagent-radius-sm); background: transparent; color: var(--pagent-muted); font-size: 13px; font-weight: 400; text-align: left;
+}
+.pagent-railgear:hover:not(:disabled) { background: color-mix(in srgb, var(--pagent-text) 5%, transparent); color: var(--pagent-text); }
+.pagent-top .pagent-gear { margin-left: 2px; }
+
+/* ---------------------------------------------------------------- settings
+   The person's settings (Settings.tsx), in the browser's modal: a box over a scrim, a row per setting (its name, and
+   the choice beside it; under it on a narrow screen). */
+.pagent-settings { padding: 0; border: 0; background: transparent; color: var(--pagent-text); width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: visible; }
+.pagent-settings::backdrop { background: var(--pagent-scrim); }
+.pagent-settings[open] { animation: pagent-fade 160ms var(--pagent-ease); }
+.pagent-settings-box {
+  display: flex; flex-direction: column; gap: 20px; max-height: calc(100dvh - 32px); overflow: auto;
+  padding: 16px 20px 22px; background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: var(--pagent-radius-lg); box-shadow: var(--pagent-shadow);
+}
+.pagent-settings-box > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: -14px; }
+.pagent-settings-box h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.pagent-settings-box > header .pagent-icon { width: 28px; height: 28px; font-size: 18px; }
+.pagent-settings-where { margin: 0; font-size: 12.5px; color: var(--pagent-faint); }
+.pagent-settings-phone { display: flex; gap: 14px; align-items: flex-start; }
+.pagent-qr { flex: none; width: 148px; height: 148px; border-radius: var(--pagent-radius-sm); overflow: hidden; background: #fff; }
+.pagent-qr svg { display: block; width: 100%; height: 100%; }
+.pagent-settings-phone .pagent-settings-label { display: flex; flex-direction: column; gap: 10px; }
+.pagent-settings-box section, .pagent-settings-box [data-part] { display: flex; flex-direction: column; gap: 10px; }
+.pagent-settings-box h3 { margin: 0; padding-bottom: 6px; border-bottom: 1px solid var(--pagent-border); font-size: 12px; font-weight: 500; letter-spacing: 0.02em; color: var(--pagent-muted); }
+.pagent-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+.pagent-settings-label { display: flex; flex-direction: column; gap: 2px; flex: 1 1 160px; min-width: 0; font-size: 14px; }
+.pagent-settings-label small { font-size: 12px; line-height: 17px; color: var(--pagent-faint); }
+.pagent-settings-failed { margin: 0; font-size: 12.5px; color: var(--pagent-danger); }
+/* One of a few: buttons side by side, the picked one raised. */
+.pagent-choice { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--pagent-border); border-radius: var(--pagent-radius-sm); background: var(--pagent-surface-2); }
+.pagent-choice button { padding: 4px 12px; border-color: transparent; background: transparent; color: var(--pagent-muted); font-weight: 500; }
+.pagent-choice button:hover:not(:disabled) { background: color-mix(in srgb, var(--pagent-text) 6%, transparent); color: var(--pagent-text); }
+.pagent-choice button[aria-pressed="true"] { background: var(--pagent-surface); color: var(--pagent-text); box-shadow: var(--pagent-shadow-sm); border-color: var(--pagent-border); }
 
 /* An agent's status, the same everywhere (rail, console, chat, fab): working breathes, waiting for the user stands out,
    said something new is filled, idle is a quiet ring. A page without agents keeps the dot's room, so titles line up. */
@@ -299,6 +347,11 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-text code { font-size: 0.86em; background: var(--pagent-surface-2); border-radius: 4px; padding: 1px 5px; }
 .pagent-text pre { background: var(--pagent-surface-2); border-radius: 8px; padding: 10px 12px; overflow: auto; font-size: 12.5px; line-height: 1.55; }
 .pagent-text pre code { background: none; padding: 0; font-size: inherit; }
+/* An image in an agent's markdown: the app's own, as wide as the text; another site's is a link to it (chat.tsx). */
+.pagent-text img { max-width: 100%; height: auto; border-radius: var(--pagent-radius-sm); }
+.pagent-imagelink-out { overflow-wrap: anywhere; }
+/* Words for assistive technology only. */
+.pagent-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .pagent-text blockquote { padding-left: 12px; border-left: 2px solid var(--pagent-border-strong); color: var(--pagent-muted); }
 .pagent-text table { display: block; overflow-x: auto; font-size: 14px; }
 .pagent-text th, .pagent-text td { padding: 4px 10px; border-bottom: 1px solid var(--pagent-border); text-align: left; }
@@ -524,6 +577,9 @@ summary.pagent-compaction-line:hover { color: var(--pagent-muted); }
 .pagent-console-empty strong { display: block; color: var(--pagent-text); font-size: 18px; font-weight: 600; margin-bottom: 6px; }
 .pagent-resume, .pagent-stop { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; white-space: nowrap; }
 /* Messages written while the agent works, sent once it is done */
+.pagent-console-note { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 10px; font-size: 13px; color: var(--pagent-muted); background: var(--pagent-surface-2); border-radius: var(--pagent-radius); }
+.pagent-console-note > span { flex: 1; min-width: 0; }
+.pagent-console-note button { flex: none; }
 .pagent-queued { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .pagent-queued-item { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; padding: 4px 8px; border: 1px dashed var(--pagent-border-strong); border-radius: var(--pagent-radius); }
 .pagent-queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -588,6 +644,29 @@ summary.pagent-compaction-line:hover { color: var(--pagent-muted); }
 .pagent-formchip[data-state="submitted"] .pagent-formchip-state { color: var(--pagent-text); }
 .pagent-formchip[data-state="failed"] .pagent-formchip-state { color: var(--pagent-danger); }
 .pagent-tools > .pagent-formchip { margin: 0; }
+/* A plan to go ahead with (ExitPlanMode): its text rendered, scrolling inside the card; then Approve, Keep planning, or
+   what to change. Where the agent proposed it, in its reply: the same text under a quiet head saying how it stands. */
+.pagent-question-plan {
+  max-height: min(360px, 50vh); overflow: auto; padding: 10px 12px; border-radius: var(--pagent-radius-sm);
+  background: var(--pagent-surface-2); font-size: 13.5px; line-height: 1.6;
+}
+.pagent-plan { align-self: stretch; min-width: 0; margin: 4px 0; border: 1px solid var(--pagent-border); border-radius: var(--pagent-radius); background: var(--pagent-surface); }
+.pagent-plan > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; list-style: none; font-size: 13px; }
+.pagent-plan > summary::-webkit-details-marker { display: none; }
+.pagent-plan[open] > summary { border-bottom: 1px solid var(--pagent-border); }
+.pagent-plan-title { font-weight: 600; }
+.pagent-plan-state { color: var(--pagent-muted); }
+.pagent-plan[data-state="asking"] .pagent-plan-state { color: var(--pagent-waiting-text); }
+.pagent-plan-body { padding: 10px 14px 12px; font-size: 13.5px; line-height: 1.6; max-height: 480px; overflow: auto; }
+/* A list of steps (TodoWrite, update_plan): a ring to do, a breathing dot under way, a tick done (struck through). */
+.pagent-steplist { list-style: none; margin: 0; padding: 4px 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.5; }
+.pagent-steplist li { display: flex; gap: 8px; align-items: flex-start; }
+.pagent-steplist-mark { flex: none; width: 12px; height: 12px; margin-top: 4px; border-radius: 50%; border: 1.5px solid var(--pagent-border-strong); box-sizing: border-box; }
+.pagent-steplist li[data-status="active"] { font-weight: 500; }
+.pagent-steplist li[data-status="active"] .pagent-steplist-mark { border-color: var(--pagent-working); background: var(--pagent-working); animation: pagent-breathe 1.6s ease-in-out infinite; }
+.pagent-steplist li[data-status="done"] { color: var(--pagent-muted); text-decoration: line-through; text-decoration-color: var(--pagent-faint); }
+.pagent-steplist li[data-status="done"] .pagent-steplist-mark { border-color: var(--pagent-accent); background: var(--pagent-accent); box-shadow: inset 0 0 0 2px var(--pagent-surface); }
+.pagent-toolcard > .pagent-steplist { padding: 6px 10px 8px; }
 /* A phone: the question on the first line, what it is and how it went on the second */
 @media (max-width: 760px) {
   .pagent-formchip { flex-wrap: wrap; row-gap: 2px; }
@@ -647,9 +726,11 @@ summary.pagent-compaction-line:hover { color: var(--pagent-muted); }
 
 /* ---------------------------------------------------------------- the agent's native CLI
    Dark in both themes (--pagent-terminal-*); xterm reads the same tokens (TerminalView). The padding lives on the
-   frame, so the fit addon measures exactly the space xterm may use. */
+   frame, so the fit addon measures exactly the space xterm may use. It fills its container's width in any layout (a
+   flex row would otherwise shrink it to its content, a few pixels). */
 .pagent-terminal {
   display: flex; position: relative; box-sizing: border-box; overflow: hidden;
+  flex: 1 1 auto; width: 100%; min-width: 0;
   min-height: 360px; height: 100%; padding: 12px 6px 10px 14px;
   background: var(--pagent-terminal-bg); border-radius: var(--pagent-radius);
 }

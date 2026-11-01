@@ -1,7 +1,7 @@
 // A page or server code importing server functions by address ("~/<node>/<file>"): what compiles, and what the error
 // says when the address is no "use server" file of a node (core/src/compile.ts).
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -111,4 +111,12 @@ test("beside a dynamic folder at the root, the root's \"use server\" file keeps 
   } finally {
     rmSync(app, { recursive: true, force: true });
   }
+});
+
+test("a function's bundle the system's temp cleaner removed is built again, not called where it was", async () => {
+  const file = await bundleServerFile(root, join(root, "ideas/actions.ts"));
+  assert.equal(await bundleServerFile(root, join(root, "ideas/actions.ts")), file, "kept while it is there");
+  rmSync(file);
+  assert.equal(await bundleServerFile(root, join(root, "ideas/actions.ts")), file);
+  assert.ok(existsSync(file));
 });

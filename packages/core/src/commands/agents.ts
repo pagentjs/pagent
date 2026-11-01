@@ -172,8 +172,11 @@ export const askUserCommand: Command = {
   usage: "<question> [--option <answer>]… | --field <name>… | --secret --into <target>  [--wait[=seconds]]",
   about: "Ask the user (a card on the page); only when truly blocked. --option: a choice; --field: a small form, its values come to you; --secret --into: a Secure Form for a password, API key or other private value, which goes straight to the target and never to you. It returns at once; the outcome comes to you as a message (--wait: wait up to that long first).",
   more:
-    "--into env:NAME saves it in the app's .env (\"use server\" code reads process.env.NAME, no restart); app:<bridge>#<field> fills a field of the Mac app a bridge drives (its #id, label or role, as `pagent app read <bridge>` shows it). " +
-    "Never ask for a secret in the conversation or with --field: what is typed there reaches you, your transcript and logs. Do not read the value back afterwards (e.g. cat .env): it would land in your context after all.",
+    "The question is the card's title (and how the conversation shows it later): a short label (\"Weather API key\", \"Which color?\"), not a sentence. " +
+    "--option Red --option Blue: a decision (they may also type an answer). --field name --field city: a few plain values you need yourself (an address, a name, a date), one small form; they come to you one \"name: value\" line each. " +
+    "--secret --into <target>: a password, API key, token, an account's login, anything private, in a masked card that says where it goes and that you do not see it; you get only that it was saved (or cancelled). " +
+    "--into env:NAME saves it in the app's .env (created if needed, kept out of git; \"use server\" code reads process.env.NAME from its next call, no restart); app:<bridge>#<field> fills a field of the Mac app a bridge drives (its #id, label or role, as `pagent app read <bridge>` shows it). " +
+    "Never ask for a secret in the conversation, with --option or --field, or by telling the user to paste it: what is typed there reaches you, your transcript and logs. Do not read the value back afterwards (cat .env, printing process.env in an action's output): it would land in your context after all. Code that uses it is fine: have it read process.env.NAME and say \"set up the key first\" when it is missing.",
   flags: { option: "list", field: "list", secret: "bool", into: "value", wait: "bool" },
   run: async ({ ctx, me, line }, a) => {
     const question = a.pos.join(" ").trim();

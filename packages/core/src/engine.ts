@@ -41,7 +41,7 @@ const newest = (dir: string): number =>
 export function ensureShell(): void {
   if (built) return;
   const index = join(engine.shell, "index.html");
-  const sources = Math.max(newest(join(root, "packages", "shell", "src")), newest(join(root, "packages", "bridge", "src")));
+  const sources = Math.max(newest(join(root, "packages", "shell", "src")), newest(join(root, "packages", "shell", "public")), newest(join(root, "packages", "bridge", "src")));
   if (existsSync(index) && statSync(index).mtimeMs >= sources) return;
   const vite = join(root, "packages", "shell", "node_modules", ".bin", "vite");
   if (!existsSync(vite)) throw new Error(`the browser shell is not built and its build tools are missing: run \`pnpm install\` in ${root}`);

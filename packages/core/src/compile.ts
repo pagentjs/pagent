@@ -172,7 +172,7 @@ export function foreignServerFile(root: string, file: string, home: string | nul
   if (!home) return `${file}: a "use server" file outside any node; put it in a node's folder`;
   if (dirname(realpathSync(file)) !== realpathSync(nodeDir(root, home)) || !/\.(ts|js)$/.test(file)) return notInNodeFolder(root, file);
   const address = `~${home === "/" ? "" : home}/${basename(file).replace(/\.(c|m)?(t|j)sx?$/, "")}`;
-  return `${relative(realpathSync(root), file)} is a "use server" file of node ${home}: import it as "${address}" (its functions then run as ${home}, in its folder, and return the result here), not by a relative path`;
+  return `${relative(realpathSync(root), file)} is a "use server" file of node ${home}: import it as "${address}" (its functions then run as ${home}, in its folder, and return the result here), not by a relative path (\`pagent docs data-actions#another-nodes-server-functions\`)`;
 }
 
 function nodePlugin(root: string, node: string, deps?: Deps, probed?: Set<string>, styled?: Set<string>): Plugin {
@@ -275,7 +275,7 @@ function nodePlugin(root: string, node: string, deps?: Deps, probed?: Set<string
         if (!owner) return undefined;
         // Secrets and the machine stay on the server.
         const leak = code.match(/\bprocess\.env\b|from\s+["']node:[^"']+["']/);
-        if (leak) return { errors: [{ text: `${leak[0]} is server-only: move this code into a "use server" file (its functions run on the server, the page calls them)` }] };
+        if (leak) return { errors: [{ text: `${leak[0]} is server-only: move this code into a "use server" file (its functions run on the server, the page calls them; \`pagent docs data-actions#actions\`)` }] };
         const { edits, imports } = analyze(code, a.path, isShared, isServer);
         hooksOf.set(a.path, new Map(imports.map((i) => [i.source, i.names])));
         return { contents: applyEdits(code, edits), loader: a.path.endsWith("x") ? "tsx" : "ts" };

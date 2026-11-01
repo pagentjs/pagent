@@ -99,3 +99,6 @@ export function appIds(ctx: Ctx, ref: AgentRef, messages: UIMessage[]): UIMessag
   const { ids } = v;
   return messages.some((m) => ids[m.id]) ? messages.map((m) => (ids[m.id] ? { ...m, id: ids[m.id] } : m)) : messages;
 }
+
+/** The map from the transcript's ids to the app's, as it is now (a history read settles the runs found by their words). */
+export const appIdMap = (ctx: Ctx, ref: AgentRef): Record<string, string> => read(fileOf(ctx, ref)).ids;

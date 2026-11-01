@@ -4,7 +4,7 @@
 //   <AgentFab>      a status button in the corner that opens either
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type ReactNode } from "react";
 import type { FileUIPart, UIMessage } from "ai";
-import { draftKey, FormStatesOf, LOCK_ICON, Part, toolLabel, Turns, useAgentChat, useDraft, type ChatTurn } from "./chat.tsx";
+import { draftKey, FormStatesOf, LOCK_ICON, Markdown, Part, toolLabel, Turns, useAgentChat, useDraft, type ChatTurn } from "./chat.tsx";
 import { IMAGE_TYPES, imagePart, imagesIn } from "./attach.ts";
 import type { CardsShown } from "./cards.tsx";
 import { labelOf, sayIn, t, tn, useLanguage } from "./i18n.ts";
@@ -14,13 +14,15 @@ import { useHost, useResolvedAgent, type Activity, type AgentHandle, type AgentS
 
 /**
  * What an agent is doing right now: busy, current activity, pending questions, its slash commands. `said`: also where it
- * stopped (the end of its last reply) and when it last talked.
+ * stopped (the end of its last reply) and when it last talked. `loaded`: the server has said it once (before, it is a
+ * guess: idle, and nothing of its session, so what its harness can do is not known yet).
  */
-export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?: boolean; said?: boolean } = {}): AgentStatus {
+export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?: boolean; said?: boolean } = {}): AgentStatus & { loaded: boolean } {
   const agent = useResolvedAgent(explicit);
   const host = useHost();
   const lang = useLanguage();
-  const [status, setStatus] = useState<AgentStatus>({ busy: false, activity: null, questions: [], session: {} });
+  const [status, setStatus] = useState<AgentStatus>({ busy: false, activity: null, questions: [], queued: [], session: {} });
+  const [loaded, setLoaded] = useState(false);
   // How long it has been quiet grows with nothing new from it: said again every half minute while it is busy.
   const [, tick] = useState(0);
   useEffect(() => {
@@ -31,10 +33,11 @@ export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?:
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    setLoaded(false); // another agent: not read yet
     // What the events told since a read was asked for: a read made before is out of date when it arrives (the response
     // and the events come by different ways, in either order). A turn that started or ended since: all of it (it would
-    // say idle after the turn's start), so it is read again. A step, a question or an answer since: what it says of
-    // those (it would say "Working" after the turn's first step was told), so ours stay, and the rest is taken.
+    // say idle after the turn's start), so it is read again. A step, a question, an answer or the queue since: what it
+    // says of those (it would say "Working" after the turn's first step was told), so ours stay, and the rest is taken.
     let turns = 0;
     let steps = 0;
     const load = (): Promise<void> => {
@@ -42,8 +45,9 @@ export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?:
       return host.status(agent, opts).then((s) => {
         if (!alive) return;
         if (t !== turns) return void load();
-        setStatus((cur) => (st === steps ? s : { ...s, activity: cur.activity, doing: cur.doing, questions: cur.questions, quietSince: cur.quietSince, stuck: cur.stuck }));
-      }, () => {});
+        setStatus((cur) => (st === steps ? s : { ...s, activity: cur.activity, doing: cur.doing, questions: cur.questions, queued: cur.queued, quietSince: cur.quietSince, stuck: cur.stuck }));
+        setLoaded(true);
+      }, () => void (alive && setLoaded(true))); // unreadable: what it guessed is all there is
     };
     // A TUI at work reports a new state every few seconds: one reload for a burst of them.
     const soon = () => (clearTimeout(timer), (timer = setTimeout(load, 250)));
@@ -51,7 +55,7 @@ export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?:
     const off = host.onAgent(agent, (e) => {
       if (e.type === "resync" || e.type === "status" || e.type === "history") return void soon();
       if (e.type === "run-start" || e.type === "run-end") turns++;
-      if (e.type === "activity" || e.type === "question" || e.type === "answered") steps++;
+      if (e.type === "activity" || e.type === "question" || e.type === "answered" || e.type === "queued") steps++;
       setStatus((s) => {
         switch (e.type) {
           case "run-start":
@@ -67,6 +71,8 @@ export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?:
             return { ...s, questions: [...s.questions.filter((q) => q.id !== e.question.id), e.question] };
           case "answered":
             return { ...s, questions: s.questions.filter((q) => q.id !== e.id) };
+          case "queued":
+            return { ...s, queued: e.queued };
           default:
             return s;
         }
@@ -79,7 +85,7 @@ export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?:
     };
   }, [host, agent.node, agent.agent]);
   // Its label in the app's language (i18n.ts): what the server says it is doing, in the words of the page.
-  return useMemo(() => (status.doing ? { ...status, doing: { ...status.doing, label: labelOf(status.doing) } } : status), [status, lang]);
+  return useMemo(() => ({ ...status, ...(status.doing ? { doing: { ...status.doing, label: labelOf(status.doing) } } : {}), loaded }), [status, loaded, lang]);
 }
 
 /** What it is doing, in parts (a host before `doing` gives only the raw line: that is the label then). */
@@ -124,13 +130,18 @@ const contextText = (u?: SessionUsage | null) => (u?.context ? (u.window ? t("co
 
 // ---------------------------------------------------------------- question
 
-/** What a permission request is about, from its question ("Allow Bash?"): who wants to do what. */
+/** What a permission request is about, from what the tool does (its toolKind): who wants to do what. */
 const wantsTo = (q: Question, who: string) => {
-  const tool = /^Allow (\S+?)\?/.exec(q.question)?.[1] ?? "";
-  if (/^(Bash|shell|exec)/i.test(tool)) return t("question.command", { who });
-  if (/^(Edit|Write|MultiEdit|NotebookEdit|apply_patch)$/i.test(tool)) return t("question.edit", { who });
-  if (/^Web(Fetch|Search)$/.test(tool)) return t("question.web", { who });
-  return t("question.permission", { who });
+  switch (q.toolKind) {
+    case "command": return t("question.command", { who });
+    case "edit":
+    case "write": return t("question.edit", { who });
+    case "web":
+    case "webSearch": return t("question.web", { who });
+    case "planMode": return t("question.planMode", { who });
+    case "dialog": return t("question.dialog", { who });
+    default: return t("question.permission", { who });
+  }
 };
 
 /**
@@ -148,15 +159,18 @@ function PlainQuestion({ question, from }: { question: Question; from?: string }
   const [text, setText] = useState("");
   const reply = (a: string) => a.trim() && void host.answer(question.id, a.trim());
   const permission = question.kind === "permission";
+  // A plan to go ahead with: rendered, and what to change in it may be typed (it keeps the agent planning).
+  const plan = question.plan !== undefined;
   const who = from && from.toLowerCase() !== question.agent.toLowerCase() ? `${from} · ${question.agent}` : (from ?? question.agent);
   return (
-    <div className="pagent-question" data-pagent-chrome>
+    <div className="pagent-question" data-pagent-chrome data-plan={plan || undefined}>
       <div className="pagent-question-eyebrow">
         <span className="pagent-dot" data-asking="true" />
-        {permission ? wantsTo(question, who) : t("question.waiting", { who })}
+        {plan ? t("question.plan", { who }) : permission ? wantsTo(question, who) : t("question.waiting", { who })}
       </div>
       {/* The engine's own words (a permission, a trust request) in the app's language; the answer is the option as written. */}
       <div className="pagent-question-text">{(question.say && sayIn(question.say.question)) ?? question.question}</div>
+      {plan && question.plan && <Markdown className="pagent-question-plan">{question.plan}</Markdown>}
       {question.detail && <pre className="pagent-question-detail">{(question.say?.detail && sayIn(question.say.detail)) ?? question.detail}</pre>}
       {question.options.length > 0 && (
         <div className="pagent-question-options">
@@ -165,9 +179,9 @@ function PlainQuestion({ question, from }: { question: Question; from?: string }
           ))}
         </div>
       )}
-      {question.kind !== "permission" && (
+      {(!permission || plan) && (
         <form onSubmit={(e) => (e.preventDefault(), reply(text))}>
-          <input value={text} onChange={(e) => setText(e.target.value)} placeholder={t("question.type")} />
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder={t(plan ? "question.planType" : "question.type")} />
         </form>
       )}
     </div>
@@ -491,6 +505,9 @@ function Composer({ onSend, onInterject, disabled, commands = [], complete, plac
 
 // ---------------------------------------------------------------- bar
 
+/** A message's words (its text parts, together). */
+const textOf = (m: UIMessage) => m.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+
 const lastAssistant = (messages: UIMessage[]) => {
   const last = messages[messages.length - 1];
   return last?.role === "assistant" ? last : null;
@@ -536,12 +553,24 @@ export function AgentBar({ agent: explicit, onExpand, onClose, placeholder }: { 
 // ---------------------------------------------------------------- terminal
 
 /**
- * The agent's own CLI (Claude Code / Codex), live, on the same session as everything else. It keeps running
- * when the page closes; while it is open, messages the app sends to the agent are typed into it.
+ * The agent's own CLI (Claude Code, Codex, opencode …), live, on the same session as everything else. It keeps running
+ * when the page closes; while it is open, messages the app sends to the agent are typed into it (or, on a harness whose
+ * TUI is one more client of the session, go to that session as always). A harness without a TUI of its own (its runner
+ * has no interactive op: status.session.can.terminal) says so instead. Until its status has come, nothing (in its
+ * place): opened on a guess, a harness without one would start a process and show an error for a moment.
  */
 export function Terminal({ agent: explicit, style }: { agent?: AgentHandle | string; style?: CSSProperties }) {
   const agent = useResolvedAgent(explicit);
   const host = useHost();
+  const status = useAgentStatus(agent);
+  if (!status.loaded) return <div className="pagent-terminal-wait" style={style} aria-busy="true" />;
+  if (status.session.can?.terminal === false) {
+    return (
+      <div className="pagent-empty" style={style}>
+        {t("terminal.none", { harness: status.session.harness?.title ?? agent.agent })}
+      </div>
+    );
+  }
   return (
     <div data-pagent-chrome style={{ display: "contents" }}>
       <host.Terminal target={{ node: agent.node, agent: agent.agent }} style={style} />
@@ -564,8 +593,11 @@ const lasted = (ms: number) => {
 /**
  * At the end of the conversation while the agent works: that it is at it (before it has said or done anything too,
  * when there is nothing else to see), what it is doing in a few words (the call itself on hover), and for how long.
+ * Quiet so long it may be stuck: Stop right there, as in the head (its messages waiting go on after).
  */
-function Working({ status }: { status: AgentStatus }) {
+function Working({ agent, status }: { agent: AgentHandle; status: AgentStatus }) {
+  const host = useHost();
+  const [stopping, setStopping] = useState(false);
   const doing = doingOf(status);
   // Since the turn started (the host says, for a page opened mid-turn), else since this view saw it busy.
   const seen = useRef<number | null>(null);
@@ -578,11 +610,19 @@ function Working({ status }: { status: AgentStatus }) {
   }, [status.busy]);
   if (!status.busy || status.questions.length) return null;
   const since = status.since ?? seen.current ?? now;
+  const at = Math.max(now, Date.now());
+  const stuck = !!status.quietSince && (!!status.stuck || at - status.quietSince >= STUCK);
   return (
     <div className="pagent-working" role="status" title={activityDetail(status)}>
       <span className="pagent-working-dots" aria-hidden="true"><i /><i /><i /></span>
-      <span className="pagent-working-label">{[doing.label, quietNote(status, Math.max(now, Date.now()))].filter(Boolean).join(" · ")}</span>
-      <span className="pagent-working-time">{lasted(Math.max(now, Date.now()) - since)}</span>
+      <span className="pagent-working-label">{[doing.label, quietNote(status, at)].filter(Boolean).join(" · ")}</span>
+      {stuck && (
+        <button className="pagent-ghost pagent-stop" title={t("console.stopHint")} disabled={stopping} onClick={() => (setStopping(true), void host.stop(agent).finally(() => setStopping(false)))}>
+          <Icon d={STOP_ICON} size={14} />
+          {t(stopping ? "console.stopping" : "console.stop")}
+        </button>
+      )}
+      <span className="pagent-working-time">{lasted(at - since)}</span>
     </div>
   );
 }
@@ -599,7 +639,7 @@ const readerAt = new Map<string, number>();
  * changed, say), and in the composer (`complete`: suggestions for a word that starts with one of its characters, "@"
  * for the project's files; useComposer().insert puts text in it from elsewhere on the page).
  */
-export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, style, empty, chatter, cards, turnFooter, complete }: {
+export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, style, empty, chatter, cards, turnFooter, complete, prepare }: {
   agent?: AgentHandle | string;
   onCollapse?: () => void;
   onClose?: () => void;
@@ -615,28 +655,36 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
   turnFooter?: (turn: ChatTurn, turns: ChatTurn[]) => ReactNode;
   /** by character: what to suggest for the word it starts ("@": (query) => the files matching it) */
   complete?: Record<string, (query: string) => Completion[]>;
+  /**
+   * What goes to the agent for what the person wrote, as they send it (a queued message too: it waits as it was then):
+   * the text, with what the page adds to it (a line saying which files the person edited since). It is the message:
+   * the conversation shows it as sent.
+   */
+  prepare?: (text: string) => string;
 }) {
   useLanguage();
   const agent = useResolvedAgent(explicit);
   const { messages, sendMessage, stop: detach, loaded } = useAgentChat(agent);
   const status = useAgentStatus(agent, { handle: true });
-  // While it works: a message waits here and goes once it is done (queued), or goes into its turn now (interject:
-  // the harness reads it between two steps), when its status says it takes one.
-  const [queued, setQueued] = useState<{ text: string; files: FileUIPart[] }[]>([]);
-  const send = (text: string, files: FileUIPart[], interject = false) => {
+  const host = useHost();
+  // While it works: a message is queued on the server, for every page of the agent to see (and withdraw) until it goes
+  // once the turn before it is done, this page open or not; or it goes into its turn now (interject: the harness reads
+  // it between two steps), when its status says it takes one. What the page adds to it (prepare) is added as it is sent.
+  const send = (said: string, files: FileUIPart[], how: "now" | "queue" | "interject" = "now") => {
     atEnd.current = true;
+    const text = prepare ? prepare(said) : said;
     const message = text ? { text, files } : { files };
     // An interjection is a run of its own from where the turn takes it in: this view follows that one from here.
-    if (interject) void detach().then(() => sendMessage(message, { body: { interject: true } }));
-    else void sendMessage(message);
+    if (how === "interject") void detach().then(() => sendMessage(message, { body: { interject: true } }));
+    // Queued: once it starts, every view picks its run up as one started elsewhere; this one goes on following the
+    // turn in progress meanwhile. Not queued (the server is not there): the words go back into the composer.
+    else if (how === "queue") {
+      const user: UIMessage = { id: Math.random().toString(36).slice(2), role: "user", parts: [...files, ...(text ? [{ type: "text" as const, text }] : [])] };
+      void host.queue(agent, user).catch((e: Error) => (console.warn(`not queued: ${e.message}`), composers.get(draftKey(agent))?.(said)));
+    } else void sendMessage(message);
   };
-  useEffect(() => {
-    if (status.busy || !queued.length) return;
-    const [next, ...rest] = queued;
-    setQueued(rest);
-    send(next.text, next.files);
-  }, [status.busy, queued]);
-  const host = useHost();
+  // The person's own messages waiting, theirs to withdraw (another agent's or a trigger's may wait there too: not shown).
+  const queued = status.queued.filter((q) => q.caller.kind === "user");
   const [stopping, setStopping] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const key = `${agent.node}#${agent.agent}`;
@@ -733,17 +781,18 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
         <FormStatesOf agent={agent} messages={messages}>
           <Turns messages={messages} me={agent} detailed chatter={chatter} cards={cards} footer={turnFooter} busy={status.busy} />
         </FormStatesOf>
-        <Working status={status} />
+        <Working agent={agent} status={status} />
         {status.questions.map((q) => <QuestionCard key={q.id} question={q} />)}
       </div>
       <div className="pagent-console-input">
+        <TerminalNote agent={agent} status={status} />
         {queued.length > 0 && (
           <div className="pagent-queued">
-            {queued.map((q, i) => (
-              <div key={i} className="pagent-queued-item">
+            {queued.map((q) => (
+              <div key={q.id} className="pagent-queued-item">
                 <span className="pagent-muted">{t("console.queued")}</span>
-                <span className="pagent-queued-text">{q.text || tn("console.images.one", "console.images.other", q.files.length)}</span>
-                <button className="pagent-icon" aria-label={t("composer.remove")} title={t("console.unqueue")} onClick={() => setQueued((x) => x.filter((_, j) => j !== i))}>×</button>
+                <span className="pagent-queued-text">{textOf(q.user) || tn("console.images.one", "console.images.other", q.user.parts.filter((p) => p.type === "file").length)}</span>
+                <button className="pagent-icon" aria-label={t("composer.remove")} title={t("console.unqueue")} onClick={() => void host.unqueue(agent, q.id)}>×</button>
               </div>
             ))}
           </div>
@@ -756,10 +805,42 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
           commands={status.session.slashCommands}
           complete={complete}
           attach={attach}
-          onSend={(text, files) => (status.busy ? setQueued((x) => [...x, { text, files }]) : send(text, files))}
-          onInterject={status.busy && status.interject ? (text, files) => send(text, files, true) : undefined}
+          onSend={(text, files) => send(text, files, status.busy ? "queue" : "now")}
+          onInterject={status.busy && status.interject ? (text, files) => send(text, files, "interject") : undefined}
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * What is off about the agent's terminal, above the composer: its turns run headless for now (its TUI did not come up:
+ * why, and when it is tried again; meanwhile nothing goes into a turn in progress, which is why there is no "say it
+ * now"), or its TUI runs settings that changed since it started (it restarts with them before its next message; or now).
+ */
+function TerminalNote({ agent, status }: { agent: AgentHandle; status: AgentStatus }) {
+  const host = useHost();
+  const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const h = status.headless;
+  if (h) {
+    const min = h.retryAt ? Math.max(1, Math.ceil((h.retryAt - Date.now()) / 60_000)) : null;
+    return (
+      <div className="pagent-console-note" data-kind="headless">
+        {t("console.headless", { why: h.why })} {min ? t("console.headlessRetry", { min }) : t("console.headlessOpen")}
+      </div>
+    );
+  }
+  if (!status.terminal?.stale) return null;
+  const restart = host.restartTerminal;
+  return (
+    <div className="pagent-console-note" data-kind="stale">
+      <span>{error ?? t(status.terminal.stale === "update" ? "console.updated" : "console.stale")}</span>
+      {restart && (
+        <button className="pagent-ghost" disabled={restarting || status.busy} onClick={() => (setRestarting(true), setError(null), void restart(agent).catch((e: Error) => setError(e.message)).finally(() => setRestarting(false)))}>
+          {t("console.restart")}
+        </button>
+      )}
     </div>
   );
 }

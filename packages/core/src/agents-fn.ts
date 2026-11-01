@@ -6,13 +6,15 @@
 // into that bundle (extract: agentsModule), so the page's components and styles stay the browser's, and the page's
 // bundle in turn leaves out the function and the imports only it uses.
 //
-// What it returned is kept while nothing it was made from changed (its code, its imports, the .env) for the same params.
-import { statSync } from "node:fs";
+// What it returned is kept while nothing it was made from changed (its code, its imports, the .env) for the same params;
+// for an instance, from when it is made: before that, it is only asked whether the params are the page's (Nodes.make),
+// and the instance's folder, with the data it is made with (nodes.make's `data`), is not there yet for it to read.
+import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Plugin } from "esbuild";
 import { bundle, runServerCode } from "./actions.ts";
 import { agentsFrom, type AgentDecl } from "./extract.ts";
-import type { Params } from "./tree.ts";
+import { nodeDir, type Params } from "./tree.ts";
 
 const ENTRY = (file: string) => `
 import { agents } from ${JSON.stringify(`pagent-agents:${file}`)};
@@ -69,8 +71,9 @@ export async function agentsOf(root: string, file: string, module: string, param
   try {
     env = String(statSync(join(root, ".env")).mtimeMs);
   } catch {}
-  const key = `${script}\n${env}\n${path}\n${JSON.stringify(params)}`;
-  const known = kept.get(key);
+  // An instance not made yet: run, not kept (a folder is made for it next, perhaps with data its function reads).
+  const key = existsSync(nodeDir(root, path)) ? `${script}\n${env}\n${path}\n${JSON.stringify(params)}` : null;
+  const known = key && kept.get(key);
   if (known) return known;
   const { r, logs } = await runServerCode(root, file, entry, path, root, { params }, { url, here: { path, params } }, label, plugins);
   if (!r.ok) {
@@ -80,11 +83,11 @@ export async function agentsOf(root: string, file: string, module: string, param
   }
   if (r.value === null) {
     const out = { agents: [], errors: [], refused: `${label} returned null for ${JSON.stringify(params)}: no such instance` };
-    kept.set(key, out);
+    if (key) kept.set(key, out);
     return out;
   }
   const value = agentsFrom(r.value);
   const out = { agents: value.agents, errors: value.errors.map((e) => `${label}: ${e}`) };
-  kept.set(key, out);
+  if (key) kept.set(key, out);
   return out;
 }

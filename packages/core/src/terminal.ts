@@ -2,6 +2,7 @@
 // restarting this server, leaves it running, like tmux. The daemon answers the OSC 7501 status probe; the status a TUI
 // reports that way is the agent's status. While it is open, the app's messages to the agent are typed into it (the
 // typed driver, agents/typed.ts), or it is one more client of the thread the app talks to directly (agents/thread.ts).
+import xterm from "@xterm/headless";
 import { broadcast } from "./events.ts";
 import { keyOf, type AgentRef } from "./refs.ts";
 import { harnessEnv } from "./shell-env.ts";
@@ -20,15 +21,25 @@ export type TuiCommand = {
   trust?: { prompt: string; keys: string[]; harness?: string };
   /** Keys that do what a person does in it: stop the turn in progress (Esc), answer a permission prompt. */
   keys?: TuiKeys;
+  /** The agent's declaration it starts with (declSignature, agents/tui.ts): one that changed since makes it stale. */
+  decl?: string;
+  /** The harness program it starts (program.ts): one updated since makes it stale too. */
+  program?: string;
 };
 
-export type TuiKeys = { interrupt?: string[]; allow?: string[]; deny?: string[] };
+/**
+ * Keys that stop the turn in progress, answer a permission prompt or dismiss any other dialog in the TUI (default
+ * Esc); and how that prompt reads in its OSC 7501 status message (prompt: a regular expression, its first group the
+ * tool and its second what it asks about), as its runner says them (its interactive op).
+ */
+export type TuiKeys = { interrupt?: string[]; allow?: string[]; deny?: string[]; dismiss?: string[]; prompt?: string };
 
 export type Term = {
   ref: AgentRef;
   id: string; // the daemon's process id
   pid?: number; // the OS's: runners find the session the TUI is on by it (it may move: a /clear)
   output: string; // recent output, replayed to a page that attaches
+  outputAt: number; // when output last came (paste: has it drawn what was pasted?)
   viewers: Set<(data: string | null) => void>;
   status: TermStatus | null; // null: the TUI does not report status (OSC 7501)
   onStatus: Set<(s: TermStatus) => void>;
@@ -37,6 +48,11 @@ export type Term = {
   session?: string; // see TuiCommand.session
   keys?: TuiKeys; // see TuiCommand.keys
   reopen?: boolean; // closed to be started again: its viewers reconnect to the new one
+  exitCode?: number | null; // how it exited, once it did (null: the daemon went away)
+  screen: InstanceType<typeof xterm.Terminal>; // what it shows, drawn as a terminal draws it (screenLines)
+  decl?: string; // see TuiCommand.decl
+  program?: string; // see TuiCommand.program
+  dialog?: string; // blocked on a dialog that is no permission prompt: its first line, as its screen shows it (agents/tui.ts)
 };
 
 const KEEP = 512 * 1024;
@@ -48,23 +64,30 @@ export function terminalOf(ref: AgentRef): Term | undefined {
   return terms.get(keyOf(ref));
 }
 
-export function terminalStatus(ref: AgentRef): { open: boolean; state?: string; kind?: string; msg?: string } {
+/** The terminals open for this app. */
+export const openTerminals = () => [...terms.values()];
+
+/** dialog: blocked on a dialog that is no permission prompt, its first line (what msg says may be just "dialog open"). */
+export function terminalStatus(ref: AgentRef): { open: boolean; state?: string; kind?: string; msg?: string; dialog?: string } {
   const t = terminalOf(ref);
-  return t ? { open: true, ...(t.status ?? {}) } : { open: false };
+  return t ? { open: true, ...(t.status ?? {}), ...(t.status?.state === "blocked" && t.dialog ? { dialog: t.dialog } : {}) } : { open: false };
 }
 
 // The terminal opened, closed, or its TUI reported a new state: the agent's status changed, its conversation did not
 // (turns typed in the TUI reach the conversation from the transcript, agents.ts). Status views reload; chats do not.
-const statusChanged = (ref: AgentRef) => broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "status" } });
+export const statusChanged = (ref: AgentRef) => broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "status" } });
 
-type Known = Pick<Term, "status" | "session" | "pid" | "keys">;
+type Known = Pick<Term, "status" | "session" | "pid" | "keys" | "decl" | "program">;
 
-function track(ref: AgentRef, id: string, known: Known): { term: Term; follow: (e: ProcEvent) => void } {
-  const t: Term = { ref, id, output: "", viewers: new Set(), onStatus: new Set(), quietSince: Date.now(), statusAt: Date.now(), ...known };
+function track(ref: AgentRef, id: string, known: Known, size = { cols: 120, rows: 40 }): { term: Term; follow: (e: ProcEvent) => void } {
+  const screen = new xterm.Terminal({ cols: size.cols, rows: size.rows, scrollback: 0, allowProposedApi: true });
+  const t: Term = { ref, id, output: "", outputAt: 0, viewers: new Set(), onStatus: new Set(), quietSince: Date.now(), statusAt: Date.now(), screen, ...known };
   const follow = (e: ProcEvent) => {
     if (e.ev === "data") {
       if (t.status === null) t.quietSince = Date.now();
+      t.outputAt = Date.now();
       t.output = (t.output + e.data).slice(-KEEP);
+      t.screen.write(e.data);
       for (const v of t.viewers) v(e.data);
     } else if (e.ev === "status") {
       t.status = e.status;
@@ -76,6 +99,7 @@ function track(ref: AgentRef, id: string, known: Known): { term: Term; follow: (
       const note = `\r\n\x1b[2m[${why}${t.session && !t.reopen ? "; the agent still works from the app" : ""}]\x1b[0m\r\n`;
       for (const v of t.viewers) v(note);
       if (t.reopen) for (const v of t.viewers) v(null);
+      t.exitCode = e.lost ? null : (e.code ?? null);
       if (terms.get(keyOf(ref)) === t) terms.delete(keyOf(ref));
       t.status = { state: "idle" };
       for (const cb of t.onStatus) cb(t.status);
@@ -97,11 +121,11 @@ export function openTerminal(ref: AgentRef, cmd: TuiCommand, size: { cols: numbe
   if (!opening.has(key)) {
     opening.set(key, (async () => {
       const id = `term:${appRoot}:${key}`;
-      const { trust: _trust, session, env: _env, keys, ...spawn } = cmd;
-      const { term, follow } = track(ref, id, { status: null, session, keys });
+      const { trust: _trust, session, env: _env, keys, decl, program, ...spawn } = cmd;
+      const { term, follow } = track(ref, id, { status: null, session, keys, decl, program }, size);
       const env = { ...(await harnessEnv()), ...cmd.env, TERM: "xterm-256color", COLORTERM: "truecolor" };
       // What a restarted server needs to know of it, kept with the process in the daemon.
-      const meta = { app: appRoot, type: "terminal", ...ref, ...(session ? { session } : {}), ...(keys ? { keys } : {}) };
+      const meta = { app: appRoot, type: "terminal", ...ref, ...(session ? { session } : {}), ...(keys ? { keys } : {}), ...(decl ? { decl } : {}), ...(program !== undefined ? { program } : {}), size };
       term.pid = (await spawnProc({ id, kind: "pty", ...spawn, env, ...size, meta }, follow)).pid;
       terms.set(key, term);
       for (const w of watchers) w(term);
@@ -118,7 +142,7 @@ export async function recoverTerminals(root: string) {
   for (const p of await listProcs(root)) {
     if (p.kind !== "pty" || p.meta.type !== "terminal" || p.exit) continue;
     const ref = { node: p.meta.node, agent: p.meta.agent };
-    const { term, follow } = track(ref, p.id, { status: p.status, session: p.meta.session, pid: p.pid, keys: p.meta.keys });
+    const { term, follow } = track(ref, p.id, { status: p.status, session: p.meta.session, pid: p.pid, keys: p.meta.keys, decl: p.meta.decl, program: p.meta.program }, p.meta.size);
     terms.set(keyOf(ref), term);
     for (const w of watchers) w(term);
     await attachProc(p.id, follow);
@@ -146,7 +170,7 @@ export function attach(t: Term, view: (data: string | null) => void) {
   t.viewers.add(view);
   return {
     input: (data: string) => procOp("write", t.id, { data }),
-    resize: (cols: number, rows: number) => cols > 0 && rows > 0 && procOp("resize", t.id, { cols, rows }),
+    resize: (cols: number, rows: number) => cols > 0 && rows > 0 && (t.screen.resize(cols, rows), procOp("resize", t.id, { cols, rows })),
     detach: () => {
       t.viewers.delete(view);
       t.quietSince = Date.now();
@@ -210,6 +234,21 @@ export function whenUp(t: Term, ms: number, dialog?: RegExp): Promise<"ready" | 
   });
 }
 
+/**
+ * What the TUI shows now, line by line (blank lines at the end left out), as a terminal draws it: a dialog in it, what
+ * a shell asks before the harness starts. Output that just came is on it once drawn() resolves.
+ */
+export function screenLines(t: Term): string[] {
+  const b = t.screen.buffer.active;
+  const lines: string[] = [];
+  for (let i = 0; i < t.screen.rows; i++) lines.push(b.getLine(b.viewportY + i)?.translateToString(true).trimEnd() ?? "");
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return lines;
+}
+
+/** Resolves once the output so far is on its screen (screenLines). */
+export const drawn = (t: Term) => new Promise<void>((resolve) => t.screen.write("", resolve));
+
 /** Press keys in the TUI, one at a time (as a person would: a TUI may read a burst as one key). */
 export async function pressKeys(t: Term, keys: string[]) {
   for (const k of keys) {
@@ -218,12 +257,23 @@ export async function pressKeys(t: Term, keys: string[]) {
   }
 }
 
-/** Paste a message into the TUI and press Enter, as a user would. */
+/**
+ * Paste a message into the TUI and press Enter, as a user would: once it has drawn what was pasted (it has taken the
+ * paste in), or at most PASTE_TAKEN later. An Enter that comes while a TUI is still taking a paste in can be lost
+ * (Claude Code holds it until the paste is in its prompt, and may drop it then): right after a turn, in a long session,
+ * a fixed 150 ms was not always enough, and the message stayed in its prompt (SPEC 13.25).
+ */
 export async function paste(t: Term, message: string) {
+  const at = t.outputAt;
   procOp("write", t.id, { data: `\x1b[200~${message}\x1b[201~` });
-  await new Promise((r) => setTimeout(r, 150));
+  for (const since = Date.now(); Date.now() - since < PASTE_TAKEN && isOpen(t); ) {
+    await new Promise((r) => setTimeout(r, 50));
+    // It drew something since, and nothing more for a moment (it may draw the paste in a few frames).
+    if (Date.now() - since >= 150 && t.outputAt > at && Date.now() - t.outputAt >= 100) break;
+  }
   procOp("write", t.id, { data: "\r" });
 }
+const PASTE_TAKEN = 2_000;
 
 /** Calls back once the TUI went from a turn back to idle, or exited (in a turn or not: nothing more comes from it). */
 export function afterTurn(t: Term, cb: () => void): () => void {

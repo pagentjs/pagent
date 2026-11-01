@@ -36,8 +36,9 @@ test("where a message comes from", () => {
   const outside = { kind: "external" as const, ip: "192.168.0.50", from: "http://192.168.0.50:4880/api/message", key: { name: "sam", scope: "/" } };
   assert.deepEqual(fromOf({ id: "1", role: "user", parts: [{ type: "text", text: "hi" }], metadata: { caller: outside } }), { kind: "outside", who: "192.168.0.50:4880" });
   assert.deepEqual(fromOf(user("1", "summary", undefined, "compaction")), { kind: "compaction" });
-  // Unmarked, Claude Code's summary reads as one.
-  assert.deepEqual(fromOf(user("1", "This session is being continued from a previous conversation that ran out of context.")), { kind: "compaction" });
+  // The bridge knows no harness's words: a summary its runner did not mark is a message (the claude runner marks Claude
+  // Code's, even where the transcript does not: below).
+  assert.deepEqual(fromOf(user("1", "This session is being continued from a previous conversation that ran out of context.")), { kind: "person" });
   assert.deepEqual(fromOf(reply("2", "x")), { kind: "reply" });
 });
 
@@ -79,7 +80,7 @@ test("the summary after a compaction is a divider of its own; a reply keeps what
   assert.equal(ms[2].parts.length, 3, "the message itself is left as it was");
 });
 
-test("claude-code: the summary a session goes on from is marked as one, not as the person's; its /compact shows once", () => {
+test("claude: the summary a session goes on from is marked as one, not as the person's; its /compact shows once", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-compact-"));
   try {
     const cwd = join(dir, "work");
@@ -98,9 +99,11 @@ test("claude-code: the summary a session goes on from is marked as one, not as t
         line({ type: "user", uuid: "c1", isMeta: true, message: { role: "user", content: "<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>" } }) +
         line({ type: "user", uuid: "c2", message: { role: "user", content: "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>" } }) +
         line({ type: "user", uuid: "c3", message: { role: "user", content: "<local-command-stdout>Compacted</local-command-stdout>" } }) +
-        line({ type: "user", uuid: "u2", message: { role: "user", content: "after" } }),
+        line({ type: "user", uuid: "u2", message: { role: "user", content: "after" } }) +
+        // An older Claude Code's summary, unmarked: the runner knows it by its words.
+        line({ type: "user", uuid: "s2", message: { role: "user", content: "This session is being continued from a previous conversation that ran out of context.\n\nSummary: older" } }),
     );
-    const [h] = execFileSync(process.execPath, [join(repo, "packages/runners/src/claude-code.ts")], {
+    const [h] = execFileSync(process.execPath, [join(repo, "packages/runners/src/claude.ts")], {
       input: JSON.stringify({ op: "history", cwd, stateDir: join(dir, "state") }),
       encoding: "utf8",
       env: { ...process.env, CLAUDE_CONFIG_DIR: config },
@@ -110,7 +113,7 @@ test("claude-code: the summary a session goes on from is marked as one, not as t
       .map((l) => JSON.parse(l));
     assert.deepEqual(
       h.messages.map((m: any) => [m.id, m.metadata?.kind ?? null]),
-      [["u1", null], ["s1", "compaction"], ["u2", null]], // the command once, before its summary
+      [["u1", null], ["s1", "compaction"], ["u2", null], ["s2", "compaction"]], // the command once, before its summary
     );
     assert.match(h.messages[1].parts[0].text, /^This session is being continued/);
   } finally {

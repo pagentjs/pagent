@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 type UIMessage = Parameters<typeof formStates>[0][number];
 import { formAskOf, formStates, outcomeOf, shellWords } from "../../packages/bridge/src/forms.ts";
+import { withMeta } from "../lib/tools.ts";
 
 test("a command line as words, the way a shell splits it", () => {
   assert.deepEqual(shellWords(`pagent ask-user "Weather API key" --secret --into env:WEATHER_KEY`), ["pagent", "ask-user", "Weather API key", "--secret", "--into", "env:WEATHER_KEY"]);
@@ -31,7 +32,7 @@ test("how a form ended, from what pagent told the agent", () => {
 const ask = (id: string, command: string, output = "Asked the user …"): UIMessage => ({
   id: `m-${id}`,
   role: "assistant",
-  parts: [{ type: "dynamic-tool", toolName: "Bash", toolCallId: id, state: "output-available", input: { command }, output } as any],
+  parts: [withMeta({ type: "dynamic-tool", toolName: "Bash", toolCallId: id, state: "output-available", input: { command }, output }) as any],
 });
 const user = (text: string): UIMessage => ({ id: `u-${text.slice(0, 12)}-${Math.random()}`, role: "user", parts: [{ type: "text", text }] });
 const SECRET = `pagent ask-user "Weather API key" --secret --into env:WEATHER_KEY`;

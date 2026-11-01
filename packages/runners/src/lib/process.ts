@@ -4,22 +4,50 @@
 // session nobody sees, and the next turn becomes a second writer on it.
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 
+// Why a harness could not be started (its binary is not there), by its process.
+const failed = new WeakMap<ChildProcessWithoutNullStreams, string>();
+
+/** Why the harness never ran ("claude not found"), or undefined: it started. */
+export const spawnError = (child: ChildProcessWithoutNullStreams): string | undefined => failed.get(child);
+
+/** Signal the harness's whole group: it and what it started (a shell tool's background process, an LSP, an MCP server). */
+function signalGroup(child: ChildProcessWithoutNullStreams, sig: NodeJS.Signals | 0): boolean {
+  if (!child.pid) return false;
+  try {
+    process.kill(-child.pid, sig);
+    return true;
+  } catch {
+    return false; // already gone
+  }
+}
+
+/**
+ * Stop the harness and everything it started: SIGTERM to its group, then, if any of it is still there after `ms`
+ * (default 3 s), SIGKILL. Resolves once the group is gone.
+ */
+export async function stopGroup(child: ChildProcessWithoutNullStreams, ms = 3000): Promise<void> {
+  try {
+    child.stdin.end();
+  } catch {}
+  if (!signalGroup(child, "SIGTERM")) return;
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await new Promise((r) => setTimeout(r, 50));
+    if (!signalGroup(child, 0)) return;
+  }
+  signalGroup(child, "SIGKILL");
+}
+
 export function spawnHarness(command: string, args: string[], opts: SpawnOptions): ChildProcessWithoutNullStreams {
   const child = spawn(command, args, { ...opts, stdio: ["pipe", "pipe", "pipe"], detached: true }) as ChildProcessWithoutNullStreams;
-  const group = (sig: NodeJS.Signals) => {
-    try {
-      process.kill(-child.pid!, sig);
-    } catch {
-      // already gone
-    }
-  };
+  // Not there (ENOENT), or not runnable: said, not thrown (an 'error' nobody hears ends the runner). Its 'close' follows.
+  child.on("error", (e: NodeJS.ErrnoException) => failed.set(child, e.code === "ENOENT" ? `${command} not found` : `${command} could not start (${e.message})`));
+  child.stdin.on("error", () => {}); // EPIPE: it went away before it read what it was given (its 'close' says so)
   let stopping = false;
   const stop = () => {
     if (stopping) return;
     stopping = true;
-    group("SIGTERM");
-    child.on("close", () => process.exit(1));
-    setTimeout(() => (group("SIGKILL"), process.exit(1)), 3000);
+    void stopGroup(child).then(() => process.exit(1));
   };
 
   const parent = process.ppid;

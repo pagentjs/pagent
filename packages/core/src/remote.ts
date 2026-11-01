@@ -6,10 +6,12 @@
 // browser's plane; the app's public face (/api/**, /mcp) takes any key, or none (a stranger).
 import type { IncomingMessage } from "node:http";
 import { hostname, networkInterfaces } from "node:os";
+import { appId } from "./daemon-protocol.ts";
 import { OWNER, ownerKey, presentedKey, resolveKey } from "./keys.ts";
 
-/** The cookie a browser on another device keeps the owner key in. */
-export const COOKIE = "pagent_token";
+/** The cookie a browser on another device keeps this app's owner key in: one per app, since a browser keeps cookies by
+ *  host, not port (two apps of one machine, :4880 and :4900, would overwrite each other's). */
+export const cookieName = (root: string) => `pagent_token_${appId(root)}`;
 
 export const isLoopbackHost = (host: string) => /^(127\.\d+\.\d+\.\d+|::1|localhost)$/i.test(host);
 
@@ -32,6 +34,8 @@ export function ownHost(host: string): boolean {
 
 export type Remote = {
   token: string;
+  /** The cookie's name (cookieName). */
+  name: string;
   /** "ok", "set" (a valid ?token= on a page: set the cookie and redirect without it) or "refused". */
   check(req: IncomingMessage, url: URL): "ok" | "set" | "refused";
   cookie: string;
@@ -48,13 +52,14 @@ export function remoteAccess(root: string, local: (host: string) => boolean): Re
   };
   return {
     token,
-    cookie: `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`,
+    name: cookieName(root),
+    cookie: `${cookieName(root)}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`,
     check(req, url) {
       // This machine by another name (its host name) may be a stranger's page: one whose domain re-resolves to
       // 127.0.0.1 (DNS rebinding), named with this machine's name as its first label (ownHost). It shows the token too.
       const from = (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
       if (isLoopbackHost(from) && local(req.headers.host ?? "")) return "ok";
-      if (owner(presentedKey(req.headers, COOKIE))) return "ok";
+      if (owner(presentedKey(req.headers, cookieName(root)))) return "ok";
       if (owner(url.searchParams.get("token"))) return req.method === "GET" ? "set" : "ok";
       return "refused";
     },

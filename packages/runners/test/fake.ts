@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// A runner for tests: the runner contract (runners/src/claude-code.ts) without a harness, a model or a network. Its
+// A runner for tests: the runner contract (runners/src/lib/contract.ts) without a harness, a model or a network. Its
 // sessions are transcripts it keeps itself (<stateDir>/transcript.jsonl, and one more per /clear in its TUI), so
 // history, last words and the transcript watcher work as with a real harness. Declare it with the script's path: agents = { bot: { runner: "/…/fake.ts" } }.
 // Its describe says nothing about its turns (only that it answers strangers), so they are headless; fake-tui.ts is the same runner with a TUI,
@@ -21,8 +21,19 @@
 //   !exit                the process ends there (in the TUI: the TUI exits mid-turn, as a killed Claude Code does)
 //   !perm <command>      in the TUI: a permission prompt, as Claude Code's (OSC 7501 blocked, kind=permission); "1"
 //                        allows ("ran <command>"), Esc denies ("denied <command>")
+//   !dialog <title>|<choice>|…  in the TUI: any other dialog, as Claude Code's product prompts (OSC 7501 blocked, "dialog
+//                        open"), drawn below a rule with its choices ("❯" at the one selected); arrows move, Enter
+//                        chooses ("chose <choice>"), Esc dismisses ("dismissed <title>")
+//   !tool <name> <JSON>  a tool call of that name with that input, done ("ok"), kept in the transcript (a TodoWrite, an
+//                        update_plan, a Codex plan item as "plan")
+//   !ask <name> <JSON>   a tool call that asks the app first, as a harness's permission request does (POST to its
+//                        permissionUrl; an ExitPlanMode with { plan }): allowed, its output "approved"; denied, its error
+//                        is the app's message; then a block "allowed <name>" or "denied <name>: <message>"
+// Its tools are named as Claude Code's are (Bash, Agent, TodoWrite …) or Codex's (update_plan, plan), and say what they
+// do by those harnesses' tables (lib/claude-tools.ts, lib/codex-tools.ts).
 // Another process holding its session: <stateDir>/holder.json ({ pid, name? }), what its "holder" op then reports.
-// A thread session slow to start: <stateDir>/ready-delay (milliseconds) before it says it is ready.
+// A thread session slow to start: <stateDir>/ready-delay (milliseconds) before it says it is ready. A TUI slow to take
+// a paste in, or that loses the Enter after one, or slow to start a turn: paste-delay, lose-enter, start-delay (tuiProgram).
 // With no !say / !slow / !sh step the reply is "echo: <message>". In the TUI, Esc stops the turn, and a message typed
 // while it runs is taken in before its next step (or, typed after the last one, is the next turn).
 // A stranger's one-off answer (the "stranger" op, SPEC 13.7): no steps run (it has no tools), nothing is written to a
@@ -32,30 +43,42 @@
 // The id its transcript keeps a message under: on a thread, each message's "user" event says it (as Codex's item id
 // does); headless and in the TUI it says none, so the engine finds the message by its words (core: agents/ids.ts).
 import { exec } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { UIMessage, UIMessageChunk } from "ai";
+import { claudeToolLive } from "../src/lib/claude-tools.ts";
+import { codexTool } from "../src/lib/codex-tools.ts";
+import { askApp } from "../src/lib/permission.ts";
+import { annotate, type Classify } from "../src/lib/tools.ts";
+import { byTime, turnsOf, type TrajectoryRecord } from "../src/lib/trajectory.ts";
 
 // tui: the agent's TUI is running, as this pid; session: the TUI's own (it writes to the session it is on).
 // thread: the thread the agent's session has open (fake-thread.ts).
 // skills, mcps: what the agent declares instead of its harness's own (core: agents/runner.ts, ownConfig).
 // appRoot: the app's folder (core: agents/runner.ts, agentInput).
-type Input = { op: string; message?: string; cwd: string; stateDir: string; env?: Record<string, string>; tui?: number; session?: string; thread?: string; skills?: string[]; mcps?: Record<string, unknown>; appRoot?: string; systemPrompt?: string };
+type Input = { op: string; message?: string; cwd: string; stateDir: string; env?: Record<string, string>; tui?: number; session?: string; thread?: string; skills?: string[]; mcps?: Record<string, unknown>; appRoot?: string; systemPrompt?: string; permissionUrl?: string; options?: Record<string, unknown> };
 // "end": the TUI finished a turn (what the follow op waits for).
 // "parts": parts of the reply other than text (the sub-agents of !agents), as they are shown.
 // "queued": a message typed into the TUI while it was in a turn (Claude Code's queue-operation enqueue); it is a
 // "user" entry once the turn takes it in.
-type Entry = { uuid: string; type: "user" | "assistant" | "end" | "title" | "parts" | "queued"; text: string; at: string; parts?: UIMessage["parts"] };
+// kind: a user entry that is no one's message (a compaction's summary), as the history marks it (metadata.kind).
+type Entry = { uuid: string; type: "user" | "assistant" | "end" | "title" | "parts" | "queued"; text: string; at: string; parts?: UIMessage["parts"]; kind?: string };
 type Where = Pick<Input, "stateDir" | "tui" | "session">;
 
 /** How its turns go, as fake-tui.ts sets it before loading this: null, the runner says nothing (headless). */
 const TURNS = ((globalThis as { FAKE_TURNS?: string }).FAKE_TURNS ?? null) as "tui" | "thread" | null;
 
-const out = (c: UIMessageChunk | Record<string, unknown>) => process.stdout.write(JSON.stringify(c) + "\n");
+/** What its calls do: by Claude Code's names, else Codex's. */
+const fakeTool: Classify = (name, input, output) => {
+  const m = claudeToolLive(name, input, output);
+  return m.kind !== "other" ? m : codexTool(name, input, output);
+};
+const said = annotate(fakeTool);
+const out = (c: UIMessageChunk | Record<string, unknown>) => process.stdout.write(JSON.stringify(said(c as Record<string, unknown>)) + "\n");
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((r) => {
     const t = setTimeout(r, ms);
@@ -91,14 +114,14 @@ function entries(input: Input): Entry[] {
  * What a turn in the TUI or on a thread has besides its message: stopped (Esc, an interrupt); a message typed while it
  * runs, taken in before its next step (as Claude Code steers one into a turn between tool calls); a permission prompt.
  */
-type Ctl = { signal?: AbortSignal; next?: () => string | undefined; ask?: (command: string) => Promise<boolean> };
+type Ctl = { signal?: AbortSignal; next?: () => string | undefined; ask?: (command: string) => Promise<boolean>; dialog?: (title: string, choices: string[]) => Promise<string | null> };
 const stepsOf = (message: string) => message.split("\n").map((l) => l.replace(/^\(from \S+\) /, "").trim());
 
 /**
  * One turn: the message's steps, the reply written to the transcript (and, headless, as chunks). Returns its text. id:
  * the message's in the transcript (a thread says it as the message comes in).
  */
-async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps" | "appRoot" | "systemPrompt">, message: string, emit: (c: UIMessageChunk) => void, ctl: Ctl = {}, id?: string): Promise<string> {
+async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps" | "appRoot" | "systemPrompt" | "permissionUrl">, message: string, emit: (c: UIMessageChunk) => void, ctl: Ctl = {}, id?: string): Promise<string> {
   write(input, "user", message, undefined, id);
   const said: string[] = [];
   const say = (text: string) => {
@@ -121,6 +144,11 @@ async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps"
     if (step === "sleep") await sleep(Number(arg), ctl.signal);
     else if (step === "exit") process.exit(3);
     else if (step === "perm") (acted = true), say(`${(await (ctl.ask?.(arg) ?? true)) ? "ran" : "denied"} ${arg}`);
+    else if (step === "dialog") {
+      const [title, ...choices] = arg.split("|").map((s) => s.trim());
+      const chose = ctl.dialog ? await ctl.dialog(title, choices.length ? choices : ["Yes", "No"]) : (choices[0] ?? "Yes");
+      (acted = true), say(chose === null ? `dismissed ${title}` : `chose ${chose}`);
+    }
     else if (step === "say") (acted = true), say(arg);
     else if (step === "card") (acted = true), say("```pagent\n" + arg + "\n```");
     else if (step === "title") write(input, "title", arg);
@@ -139,6 +167,25 @@ async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps"
       const [n, ms] = arg.split(/\s+/).map(Number);
       write(input, "parts", "", await subagents(n, ms, emit));
       say(`${n} sub-agents done.`);
+    } else if (step === "tool" || step === "ask") {
+      acted = true;
+      const [, name = "tool", json = "{}"] = /^(\S+)\s*([\s\S]*)$/.exec(arg) ?? [];
+      const toolInput = JSON.parse(json || "{}");
+      const toolCallId = randomUUID();
+      emit({ type: "tool-input-start", toolCallId, toolName: name, dynamic: true });
+      emit({ type: "tool-input-available", toolCallId, toolName: name, input: toolInput, dynamic: true });
+      let denied: string | null = null;
+      if (step === "ask") {
+        const res = input.permissionUrl ? await askApp(input.permissionUrl, { tool: name, input: toolInput, meta: fakeTool(name, toolInput) }, ctl.signal).catch(() => ({})) : {};
+        const decision = (res as { decision?: { allow: boolean; message?: string } }).decision;
+        denied = decision?.allow ? null : String(decision?.message ?? "no decision");
+      }
+      const part: any = denied === null
+        ? { type: "dynamic-tool", toolName: name, toolCallId, state: "output-available", input: toolInput, output: step === "ask" ? "approved" : "ok" }
+        : { type: "dynamic-tool", toolName: name, toolCallId, state: "output-error", input: toolInput, errorText: denied };
+      emit(denied === null ? { type: "tool-output-available", toolCallId, output: part.output, dynamic: true } : { type: "tool-output-error", toolCallId, errorText: denied, dynamic: true });
+      write(input, "parts", "", [part]);
+      if (step === "ask") say(denied === null ? `allowed ${name}` : `denied ${name}: ${denied}`);
     } else if (step === "sh") {
       acted = true;
       const toolCallId = randomUUID();
@@ -244,7 +291,7 @@ async function history(input: Input) {
   let assistant: UIMessage | null = null;
   for (const e of entries(input)) {
     if (e.type === "user") {
-      messages.push({ id: e.uuid, role: "user", parts: [{ type: "text", text: e.text }] });
+      messages.push({ id: e.uuid, role: "user", parts: [{ type: "text", text: e.text }], ...(e.kind ? { metadata: { kind: e.kind } } : {}) });
       assistant = null;
     } else {
       if (!assistant) messages.push((assistant = { id: e.uuid, role: "assistant", parts: [{ type: "step-start" }] }));
@@ -253,6 +300,37 @@ async function history(input: Input) {
     }
   }
   out({ type: "history", messages, ...(existsSync(transcript(input)) ? { file: transcript(input) } : {}) });
+}
+
+/**
+ * Its session as a trajectory (runners/src/lib/trajectory.ts): each message a turn; each block of a reply a request,
+ * from what came before it to when it was written, with the tokens its usage says (10 of output); a !sh step's call
+ * a tool. In the shape the real runners give. <stateDir>/slow-trajectory: it says what it read that many ms after reading
+ * it (what is written meanwhile is not in it, as with a long transcript).
+ */
+async function trajectory(input: Input) {
+  const records: TrajectoryRecord[] = [];
+  let turn: string | null = null;
+  let last = 0;
+  const read = entries(input);
+  const slow = join(input.stateDir, "slow-trajectory");
+  if (existsSync(slow)) await sleep(Number(readFileSync(slow, "utf8")));
+  for (const e of read) {
+    const at = Date.parse(e.at);
+    if (e.type === "user") {
+      turn = e.uuid;
+      records.push({ id: e.uuid, turnId: turn, kind: "user", start: at, input: e.text });
+    } else if (e.type === "assistant") {
+      records.push({ id: e.uuid, turnId: turn, kind: "assistant", start: last || at, end: at, name: "stand-in", model: "stand-in", output: e.text, usage: { input: 1000, cacheRead: 0, cacheWrite: 0, output: 10 } });
+    } else {
+      for (const p of (e.parts ?? []) as any[]) {
+        if (p.type === "dynamic-tool") records.push({ id: p.toolCallId, turnId: turn, kind: "tool", start: last || at, end: at, name: p.toolName, input: p.input, output: p.output });
+      }
+    }
+    last = at;
+  }
+  const file = existsSync(transcript(input)) ? transcript(input) : null;
+  out({ type: "trajectory", records: [...turnsOf(records), ...records].sort(byTime), ...(file ? { file } : {}) });
 }
 
 function last(input: Input) {
@@ -283,7 +361,7 @@ async function tuiProgram(stateDir: string, start: string) {
   state("idle");
   let buf = "";
   let busy = Promise.resolve();
-  let current: { stop: AbortController; queue: string[]; prompt?: (allowed: boolean) => void } | null = null;
+  let current: { stop: AbortController; queue: string[]; prompt?: (allowed: boolean) => void; key?: (k: string) => void } | null = null;
   const run = async (message: string) => {
     const where = { stateDir, session };
     const t: NonNullable<typeof current> = (current = { stop: new AbortController(), queue: [] });
@@ -293,26 +371,71 @@ async function tuiProgram(stateDir: string, start: string) {
         t.prompt = resolve;
         state("blocked", `:kind=permission:msg=${Buffer.from(`approve Bash: ${command}`).toString("base64")}`);
       }).then((allowed) => ((t.prompt = undefined), state("working"), allowed));
-    const text = await turn({ ...where, cwd: process.cwd(), env: {} }, message, () => {}, { signal: t.stop.signal, next: () => t.queue.shift(), ask });
+    // A dialog below a rule, redrawn as the selection moves (the screen cleared first, as a TUI redraws its frame).
+    const dialog = (title: string, choices: string[]) =>
+      new Promise<string | null>((resolve) => {
+        let at = 0;
+        const draw = () =>
+          process.stdout.write(`\x1b[2J\x1b[H${"─".repeat(40)}\r\n ${title}\r\n\r\n${choices.map((c, i) => ` ${i === at ? "❯" : " "} ${c}`).join("\r\n")}\r\n\r\n ↑/↓ choose · enter confirm · esc not now\r\n`);
+        draw();
+        state("blocked", `:msg=${Buffer.from("dialog open").toString("base64")}`);
+        t.key = (k) => {
+          if (k === "\x1b[A" || k === "\x1b[B") return (at = Math.max(0, Math.min(choices.length - 1, at + (k === "\x1b[B" ? 1 : -1)))), draw();
+          if (k !== "\r" && k !== "\x1b") return;
+          t.key = undefined;
+          state("working");
+          resolve(k === "\r" ? choices[at] : null);
+        };
+      });
+    const text = await turn({ ...where, cwd: process.cwd(), env: {} }, message, () => {}, { signal: t.stop.signal, next: () => t.queue.shift(), ask, dialog });
     process.stdout.write(`${text.replace(/\n/g, "\r\n")}\r\n`);
     if (!t.stop.signal.aborted) write(where, "end", "");
     current = null;
     state("idle");
     for (const next of t.stop.signal.aborted ? [] : t.queue) await run(next);
   };
+  // Its prompt: what was pasted and not sent yet (pasted again, it is added on a line of its own). A paste is taken in
+  // at once, and drawn below; with <stateDir>/paste-delay (ms), only after that long, and an Enter meanwhile is lost (as
+  // Claude Code may lose one). <stateDir>/lose-enter: how many Enters after a paste it loses anyway (SPEC 13.25: the
+  // message stays in its prompt); <stateDir>/start-delay (ms): how long a message it took waits before its turn starts.
+  let prompt = "";
+  let taking = 0; // pastes still being taken in
+  const setting = (name: string) => (existsSync(join(stateDir, name)) ? Number(readFileSync(join(stateDir, name), "utf8")) : 0);
+  const take = (text: string) => {
+    prompt = prompt ? `${prompt}\n${text}` : text;
+    process.stdout.write(`> ${text.replace(/\n/g, "\r\n  ")}\r\n`);
+  };
+  // Enter sends what its prompt has (an empty one: nothing), unless a paste is still being taken in, or it loses it.
+  const enter = (): string | null => {
+    if (taking) return null;
+    const lose = setting("lose-enter");
+    if (prompt && lose > 0) return writeFileSync(join(stateDir, "lose-enter"), String(lose - 1)), null;
+    const message = prompt;
+    prompt = "";
+    return message || null;
+  };
   process.stdin.setEncoding("utf8").on("data", (d: string) => {
     if (current?.prompt && (d === "1" || d === "\x1b")) return current.prompt(d === "1");
+    if (current?.key) return current.key(d);
     if (d === "\x1b") return void current?.stop.abort();
     buf += d;
-    for (let m; (m = /\x1b\[200~([\s\S]*?)\x1b\[201~\r/.exec(buf)); ) {
+    for (let m; (m = /\x1b\[200~([\s\S]*?)\x1b\[201~|\r/.exec(buf)); ) {
       buf = buf.slice(m.index + m[0].length);
-      const message = m[1];
+      if (m[0] !== "\r") {
+        const [text, delay] = [m[1], setting("paste-delay")];
+        if (!delay) take(text);
+        else taking++, setTimeout(() => (taking--, take(text)), delay);
+        continue;
+      }
+      const message = enter();
+      if (message === null) continue;
       if (current) {
         write({ stateDir, session }, "queued", message);
         current.queue.push(message);
         continue;
       }
       busy = busy.then(async () => {
+        await sleep(setting("start-delay"));
         if (message.trim() === "/clear") {
           session = `s-${randomUUID().slice(0, 8)}`;
           writeFileSync(join(stateDir, `${session}.jsonl`), "");
@@ -327,7 +450,7 @@ async function tuiProgram(stateDir: string, start: string) {
 /**
  * A turn in the TUI, as chunks: "mark" once the transcript's end is noted, then what is written after it, to its end.
  * A message typed meanwhile says "taken" when the turn takes it in; one still waiting at the end keeps the follow going
- * to the end of the turn it starts (the claude-code runner's follow does the same).
+ * to the end of the turn it starts (the claude runner's follow does the same).
  */
 async function follow(input: Input) {
   const file = transcript(input);
@@ -381,11 +504,16 @@ function serviceProgram(file: string) {
 
 const home = () => process.env.PAGENT_HOME ?? tmpdir();
 
-/** The service, as the runner describes it: where it runs, and what of the environment it must not get. */
+/**
+ * The service, as the runner describes it: where it runs, and what of the environment it must not get. FAKE_SERVICE_BIN
+ * (a program that runs node): run by it, one service per version of it, as the codex runner's app-server.
+ */
 function service() {
   const cwd = join(home(), "fake-service");
   mkdirSync(cwd, { recursive: true });
-  out({ type: "service", id: `fake-service:${home()}`, command: process.execPath, args: [fileURLToPath(import.meta.url), "--service", join(home(), "fake-service.json")], envDrop: ["FAKE_DROP_"], cwd });
+  const bin = process.env.FAKE_SERVICE_BIN;
+  const version = bin ? `:${createHash("sha1").update(`${realpathSync(bin)}\t${statSync(bin).mtimeMs}`).digest("hex").slice(0, 6)}` : "";
+  out({ type: "service", id: `fake-service:${home()}${version}`, command: bin ?? process.execPath, args: [fileURLToPath(import.meta.url), "--service", join(home(), "fake-service.json")], envDrop: ["FAKE_DROP_"], cwd });
 }
 
 /**
@@ -397,10 +525,10 @@ function service() {
  */
 async function sessionProgram(input: Input, commands: AsyncIterator<string>) {
   const thread = sessionOf(input);
-  const where = { stateDir: input.stateDir, session: thread, cwd: input.cwd, env: input.env, skills: input.skills, mcps: input.mcps };
+  const where = { stateDir: input.stateDir, session: thread, cwd: input.cwd, env: input.env, skills: input.skills, mcps: input.mcps, permissionUrl: input.permissionUrl };
   let current = null as { id: string; lines: string[]; queue: { text: string; id: string }[]; said: string; stop: AbortController } | null;
   const emit = (o: Record<string, unknown>) => {
-    const line = JSON.stringify(o);
+    const line = JSON.stringify(said(o));
     current?.lines.push(line);
     process.stdout.write(line + "\n");
   };
@@ -500,14 +628,22 @@ else {
   if (input.op === "ask") await ask(input);
   else if (input.op === "history") await history(input);
   else if (input.op === "last") last(input);
+  else if (input.op === "trajectory") await trajectory(input);
   else if (input.op === "usage") out({ type: "usage", usage: usageOf(input), file: existsSync(transcript(input)) ? transcript(input) : null });
   else if (input.op === "info") out({ type: "info", sessionId: sessionOf(input), resume: null });
   else if (input.op === "holder") out({ type: "holder", holder: holderOf(input), choices: [] });
-  // It answers strangers (and says nothing about its turns when they are headless).
-  else if (input.op === "describe") out({ type: "describe", ...(TURNS ? { turns: TURNS } : {}), strangers: true });
+  // It answers strangers. A message during a turn goes into it in its TUI and on its thread, not headless.
+  else if (input.op === "describe") {
+    const ops = ["last", "info", "usage", "trajectory", "holder", "move", "stranger", "interactive", ...(TURNS === "thread" ? ["service"] : [])];
+    out({ type: "describe", harness: { id: "fake", title: "Fake" }, turns: TURNS ?? "headless", ops, interject: TURNS !== null });
+  }
   else if (input.op === "stranger") stranger(input);
   else if (input.op === "move") out({ type: "moved", sessions: 0 }); // its sessions are in its state, which moved with the folder
-  else if (input.op === "interactive" && TURNS === "tui") out({ type: "command", command: process.execPath, args: [self, "--tui", input.stateDir, sessionOf(input)], cwd: input.cwd, env: input.env, keys: { interrupt: ["\x1b"], allow: ["1"], deny: ["\x1b"] } });
+  // An agent declared with `asks: "<question>"`: its TUI never comes up, a question waits on its screen first (as a
+  // shell's rc can ask before the CLI starts: "[oh-my-zsh] Would you like to update? [Y/n]").
+  else if (input.op === "interactive" && TURNS === "tui" && typeof input.options?.asks === "string") out({ type: "command", command: "/bin/sh", args: ["-c", `printf "%s " "$0"; read answer`, input.options.asks], cwd: input.cwd });
+  // `bin`: a program that runs node, run instead (a test updates it).
+  else if (input.op === "interactive" && TURNS === "tui") out({ type: "command", command: typeof input.options?.bin === "string" ? input.options.bin : process.execPath, args: [self, "--tui", input.stateDir, sessionOf(input)], cwd: input.cwd, env: input.env, keys: { interrupt: ["\x1b"], allow: ["1"], deny: ["\x1b"] }, prompt: String.raw`^approve (\S+?):\s*([\s\S]*)$` });
   else if (input.op === "interactive" && TURNS === "thread") out({ type: "command", command: process.execPath, args: [self, "--thread-tui", input.stateDir, sessionOf(input)], cwd: input.cwd, env: input.env });
   else if (input.op === "interactive") out({ type: "command", command: "/bin/cat", args: [], cwd: input.cwd });
   else if (input.op === "follow" && TURNS === "tui") await follow(input);

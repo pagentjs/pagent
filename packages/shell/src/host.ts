@@ -1,6 +1,7 @@
 // The inline transport: the shell implements the bridge's HostApi with fetch + one SSE stream.
 import { DefaultChatTransport, type UIMessage } from "ai";
-import type { AgentEvent, AgentRef, AgentStatus, DataRead, DataWrite, HostApi } from "@pagent/bridge";
+import type { AgentEvent, AgentRef, AgentStatus, DataRead, DataWrite, HostApi, TrajectoryPage, TrajectoryRecord } from "@pagent/bridge";
+import { provideSettingsWriter, receiveSettings, type Settings, type SettingsFromServer } from "@pagent/bridge/settings";
 
 /**
  * What the server sends on its event stream (core events.ts HostEvent, the sending end of the same protocol), and
@@ -13,7 +14,8 @@ export type HostEvent =
   | { type: "data"; path: string; file: string }
   | { type: "agent"; node: string; agent: string; event: AgentEvent }
   | { type: "screen"; id: string; clientId: string; node: string; job: { action: string; ref?: string; label?: string; value?: string; name?: string; input?: unknown } }
-  | { type: "trigger"; node: string; name: string; why: string };
+  | { type: "trigger"; node: string; name: string; why: string }
+  | { type: "settings"; settings: Partial<Settings>; rev: number };
 
 const listeners = new Set<(e: HostEvent) => void>();
 let source: EventSource | null = null;
@@ -134,12 +136,26 @@ export function createHost(NodeFrame: HostApi["NodeFrame"], McpApp: HostApi["Mcp
         }),
         prepareReconnectToStreamRequest: () => ({ api: `/_pagent/chat/stream?${qs({ node: t.node, agent: t.agent })}` }),
       }),
+    trajectory: (t, opts) => subscribed().then(() => api<TrajectoryPage>(`/_pagent/trajectory?${qs({ node: t.node, agent: t.agent, ...(opts?.after ? { after: opts.after } : {}) })}`)),
+    trajectoryRecord: async (t, id) => {
+      const res = await fetch(`/_pagent/trajectory?${qs({ node: t.node, agent: t.agent, id })}`);
+      if (res.status === 404) return null;
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? res.statusText);
+      return body.record as TrajectoryRecord;
+    },
     status: (t, opts) =>
       subscribed().then(() => api<AgentStatus>(`/_pagent/agent-status?${qs({ node: t.node, agent: t.agent, ...(opts?.handle ? { handle: "1" } : {}), ...(opts?.said ? { said: "1" } : {}) })}`)),
     action: (node, name, input, from) =>
       api("/_pagent/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node, name, input, from }) }),
     stop: (t) =>
       api<{ said: string | null }>("/_pagent/stop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(t) }).then((r) => r.said),
+    queue: (t, message) =>
+      api<{ id: string }>("/_pagent/queue", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node: t.node, agent: t.agent, message }) }).then((r) => r.id),
+    unqueue: (t, id) =>
+      api<{ withdrawn: boolean }>("/_pagent/unqueue", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node: t.node, agent: t.agent, id }) }).then((r) => r.withdrawn),
+    restartTerminal: (t) =>
+      api<{ said: string }>("/_pagent/terminal/restart", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node: t.node, agent: t.agent }) }).then((r) => r.said),
     answer: (id, answer, values) =>
       api<void>("/_pagent/answer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, answer, ...(values ? { values } : {}) }) }),
     onAgent: (t, cb) =>
@@ -168,6 +184,20 @@ export function createHost(NodeFrame: HostApi["NodeFrame"], McpApp: HostApi["Mcp
 }
 
 export { qs, api };
+
+/**
+ * The person's settings (bridge: settings.ts), from this app's server: read now, and again at each change (made in any
+ * of their apps: the server watches the file) and after the stream was away; a change made here is written there.
+ */
+export function followSettings() {
+  const load = () => api<SettingsFromServer>("/_pagent/settings").then(receiveSettings, () => {});
+  provideSettingsWriter((patch) => api<SettingsFromServer>("/_pagent/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) }));
+  onHostEvent((e) => {
+    if (e.type === "settings") receiveSettings({ ...e.settings, rev: e.rev });
+    else if (e.type === "resync") void load();
+  });
+  void load();
+}
 
 /**
  * Whether code that changed at `code` may be the node at `path`'s: its own folder, or a dynamic page's it may be an

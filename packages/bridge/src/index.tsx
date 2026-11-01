@@ -7,7 +7,7 @@ import type { UIMessage } from "ai";
 import { DataConflict, type AgentEvent, type AgentRef, type HostApi } from "./contract.ts";
 import { instanceDir } from "./instance.ts";
 
-export { DataConflict, type Activity, type AgentEvent, type AgentRef, type AgentStatus, type ChatOrigin, type DataRead, type DataWrite, type HostApi, type Question, type RateLimit, type Say, type SessionUsage, type SubagentInfo } from "./contract.ts";
+export { DataConflict, type Activity, type AgentEvent, type AgentRef, type AgentStatus, type ChatOrigin, type DataRead, type DataWrite, type HostApi, type Question, type QueuedMessage, type RateLimit, type Say, type SessionUsage, type SubagentInfo, type TrajectoryKind, type TrajectoryPage, type TrajectoryRecord, type TrajectoryUsage } from "./contract.ts";
 export type { Agents, AgentSpec, Config, McpServer, Params, RemoteAgentSpec, Tools, Triggers, TurnEvent } from "./declarations.ts";
 
 export const HostContext = createContext<HostApi | null>(null);
@@ -375,9 +375,15 @@ export function nodeHook<H extends (...args: any[]) => any>(path: string, agents
   return bound as H;
 }
 
-export { Chat, useAgentChat, type ChatTurn } from "./chat.tsx";
+export { Chat, Markdown, StepList, useAgentChat, usePlan, type ChatTurn } from "./chat.tsx";
+export { planOf, type Plan, type PlanStep, type Proposal } from "./plan.ts";
 export { NodeCard, pageUrl, parseCard, propsFromQuery, splitCards, type CardRef, type CardsShown } from "./cards.tsx";
 export { AgentBar, AgentConsole, AgentFab, QuestionCard, Terminal, doingOf, quietNote, useAgentStatus, useComposer, type Completion } from "./agent-ui.tsx";
-// The language the app is read in (the reader's choice, else its metadata.lang), and the reader's choice.
+// The reader's preferences: the language the app is read in (their choice, else its metadata.lang, else the browser's)
+// and light or dark (their choice, else the system's), each remembered in this browser.
 export { setLanguage, useLanguage } from "./i18n.ts";
+export { setTheme, useTheme, type Theme } from "./theme.ts";
+export { setSetting, useSettings, type Settings } from "./settings.ts";
+// An agent's session as a timeline (SPEC 13.17).
+export { useTrajectory, type Trajectory } from "./trajectory.ts";
 export type { UIMessage };

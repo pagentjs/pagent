@@ -5,15 +5,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { quietNote } from "../../packages/bridge/src/agent-ui.tsx";
 import { subagentDoing as doingOfSubagent, toolActivity, toolDoing as doingOfTool, type Activity } from "../../packages/core/src/agents/status.ts";
+import { withMeta } from "../lib/tools.ts";
 
 // What it is doing, as people read it in English; the same words for other languages (`say`): i18n.test.ts.
 const plain = ({ say: _, ...a }: Activity) => a;
-const toolDoing = (c: Parameters<typeof doingOfTool>[0]) => plain(doingOfTool(c));
+// Each call as a runner gives it: with what it does (its toolMetadata, from the claude and codex runners' tables).
+const toolDoing = (c: { toolName: string; input?: unknown }) => plain(doingOfTool(withMeta(c)));
 const subagentDoing = (...a: Parameters<typeof doingOfSubagent>) => plain(doingOfSubagent(...a));
 
 test("a tool call: a label people read, the tool and its argument apart", () => {
   assert.deepEqual(toolDoing({ toolName: "Bash", input: { command: "git status" } }), { label: "Running a command", tool: "Bash", detail: "git status" });
-  assert.equal(toolActivity({ toolName: "Bash", input: { command: "git status" } }), "Bash git status");
+  assert.equal(toolActivity(withMeta({ toolName: "Bash", input: { command: "git status" } })), "Bash git status");
   assert.deepEqual(toolDoing({ toolName: "Bash", input: { command: "pagent screen read /" } }).label, "Using the app");
   assert.deepEqual(toolDoing({ toolName: "Edit", input: { file_path: "/app/notes/page.tsx", old_string: "a", new_string: "b" } }), { label: "Editing page.tsx", tool: "Edit", detail: "page.tsx" });
   assert.equal(toolDoing({ toolName: "Read", input: { file_path: "/x/data.json" } }).label, "Reading data.json");
@@ -27,13 +29,14 @@ test("a tool call: a label people read, the tool and its argument apart", () => 
   });
   // Codex: apply_patch names its files in its changes.
   assert.deepEqual(toolDoing({ toolName: "apply_patch", input: { changes: [{ path: "/a/one.ts" }, { path: "/a/two.ts" }] } }), { label: "Editing 2 files", tool: "apply_patch", detail: "one.ts, two.ts" });
-  // Unknown: its name, as it is.
+  // Unknown: its name, as it is; and so is a call no runner said anything of, whatever its name.
   assert.deepEqual(toolDoing({ toolName: "Monitor" }), { label: "Monitor", tool: "Monitor" });
+  assert.deepEqual(plain(doingOfTool({ toolName: "Bash", input: { command: "ls" } })), { label: "Bash", tool: "Bash" });
 });
 
 test("a sub-agent: its type, then what its step does", () => {
   const s = { type: "Explore", description: "Look at the pages", status: "running" };
-  assert.deepEqual(subagentDoing(s, { type: "dynamic-tool", toolName: "Read", input: { file_path: "/a/page.tsx" } }), {
+  assert.deepEqual(subagentDoing(s, withMeta({ type: "dynamic-tool", toolName: "Read", input: { file_path: "/a/page.tsx" } })), {
     label: "Explore: Reading page.tsx",
     tool: "Read",
     detail: "page.tsx",
@@ -44,7 +47,7 @@ test("a sub-agent: its type, then what its step does", () => {
 });
 
 test("quiet a while: for how long; past 15 minutes, that it may be stuck", () => {
-  const status = (quietMs: number, more: { busy?: boolean; stuck?: boolean } = {}) => ({ busy: more.busy ?? true, activity: "Bash x", quietSince: Date.now() - quietMs, stuck: more.stuck, questions: [], session: {} });
+  const status = (quietMs: number, more: { busy?: boolean; stuck?: boolean } = {}) => ({ busy: more.busy ?? true, activity: "Bash x", quietSince: Date.now() - quietMs, stuck: more.stuck, questions: [], queued: [], session: {} });
   assert.equal(quietNote(status(5_000)), null);
   assert.equal(quietNote(status(3 * 60_000, { busy: false })), null);
   assert.equal(quietNote(status(3 * 60_000)), "quiet for 3 min");

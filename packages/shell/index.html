@@ -4,6 +4,34 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>pagent</title>
+    <!-- On a phone's home screen, the app opens on its own, without the browser's bars. The manifest (server.ts) is the
+         page's: added from /meetings, it opens /meetings; useDocumentTitle keeps its link on the page shown. On another
+         device, the link carries the key (__PAGENT_KEY__, server.ts): a phone may fetch it without the browser's cookie. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="theme-color" content="#fafaf9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#151514" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="/_pagent/icon.png" />
+    <link rel="apple-touch-icon" href="/_pagent/icon.png" />
+    <script>
+      {
+        const m = document.createElement("link");
+        m.rel = "manifest";
+        m.crossOrigin = "use-credentials"; // another device's key is its cookie
+        m.href = "/_pagent/manifest.webmanifest?start=" + encodeURIComponent(location.pathname) + (window.__PAGENT_KEY__ ? "&token=" + window.__PAGENT_KEY__ : "");
+        document.head.append(m);
+      }
+    </script>
+    <!-- The reader's theme (bridge: theme.ts), before anything paints: no flash of the other one on load. The person's
+         settings are the server's (bridge: settings.ts), which puts them in this page (__PAGENT_SETTINGS__); without
+         them (vite's page, in development), the last ones this browser heard of. -->
+    <script>
+      try {
+        const t = (window.__PAGENT_SETTINGS__ || JSON.parse(localStorage.getItem("pagent.settings") || "{}")).theme;
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

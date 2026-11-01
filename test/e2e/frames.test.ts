@@ -127,6 +127,10 @@ export default function S({ params }) {
     await until(async () => (await titles()).join() === "demo,a,helper,b,c", "the helper under a");
     const left = (href: string) => p.locator(`.pagent-railitem[href="${href}"]`).evaluate((e) => parseFloat(getComputedStyle(e).paddingLeft));
     assert.ok((await left("/s/demo/helper")) > (await left("/s/demo/a")));
+    // The helper's agent starts one of its own: under the helper, itself under a (not under a folder row of its name).
+    await app.post("/_pagent/ask", { node: "/s/demo/helper", agent: "main", message: '!sh pagent tell --new /s/demo/sub "!say helped too" --wait' });
+    await until(async () => (await titles()).join() === "demo,a,helper,sub,b,c", "a helper's helper under it");
+    assert.ok((await left("/s/demo/sub")) > (await left("/s/demo/helper")));
     await p.close();
   });
 

@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -27,6 +28,11 @@ describe("an agent in its TUI", () => {
       "wait/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
       "early/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
       "perm/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
+      "dialog/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
+      // A trigger's run (nobody there): its dialog is dismissed. (tell's message says "via" on its first line, which the
+      // fake runner does not take as a step: the step is a line of its own.)
+      "alone/page.tsx": `export const agents = ${JSON.stringify({ bot: { runner: fakeTuiRunner } })};\nexport const triggers = { go: { watch: "go.json", run: "go" } };\nexport default function Page() { return <div />; }\n`,
+      "alone/actions.ts": `"use server";\nimport { tell } from "pagent/server";\nexport async function go() {\n  await tell("/alone#bot", ${JSON.stringify("go\n!dialog Rate this session|Good|Bad")});\n  return "told";\n}\n`,
       "int/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
       "bad/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
     });
@@ -125,7 +131,7 @@ describe("an agent in its TUI", () => {
     // viewer, the hook leaves the prompt to the terminal, and a viewer's close reaches the server a moment after
     // ws.close() returns.)
     const hook = new AbortController();
-    void fetch(`${app.url}/_pagent/permission?node=/perm&agent=bot`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool_name: "Bash", tool_input: { command: "make" } }), signal: hook.signal }).catch(() => {});
+    void fetch(`${app.url}/_pagent/permission?node=/perm&agent=bot`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "Bash", input: { command: "make" }, meta: { kind: "command", command: "make" } }), signal: hook.signal }).catch(() => {});
     await card(); // the hook's, up first (as Claude Code's comes with its prompt)
     reply = ask("/perm", "!perm make");
     await until(async () => (await status("/perm")).terminal.state === "blocked", "the prompt");
@@ -146,6 +152,43 @@ describe("an agent in its TUI", () => {
     assert.equal(await reply, "ran ls");
     await until(async () => !(await app.get("/_pagent/prompts")).questions.some((q: any) => q.node === "/perm"), "the card to go");
     ws.close();
+  });
+
+  test("any other dialog in its TUI that nobody answers there is a card from its screen: a choice is pressed in the TUI, or it is dismissed", async () => {
+    const card = () => until(async () => (await app.get("/_pagent/prompts")).questions.find((q: any) => q.node === "/dialog"), "the card");
+    let reply = ask("/dialog", "!dialog We recommend compacting earlier|Autocompact at 400k tokens|Keep 1M\n!say done");
+    const q = await card();
+    assert.equal(q.question, "Waiting in its terminal: We recommend compacting earlier");
+    assert.deepEqual(q.options, ["Autocompact at 400k tokens", "Keep 1M", "Dismiss (Esc)"]);
+    assert.match(q.detail, /esc not now/);
+    const s = await status("/dialog");
+    assert.equal(s.activity, "waiting in its terminal: We recommend compacting earlier");
+    assert.equal(s.terminal.dialog, "We recommend compacting earlier");
+    await app.post("/_pagent/answer", { id: q.id, answer: "Keep 1M" });
+    assert.equal(await reply, "chose Keep 1M\n\ndone");
+    assert.equal((await status("/dialog")).terminal.dialog, undefined);
+
+    reply = ask("/dialog", "!dialog Try the new thing?|Yes|No");
+    await app.post("/_pagent/answer", { id: (await card()).id, answer: "Dismiss (Esc)" });
+    assert.equal(await reply, "dismissed Try the new thing?");
+
+    // Answered in the terminal: the card goes.
+    reply = ask("/dialog", "!dialog Pick one|A|B");
+    await card();
+    const ws = new WebSocket(`${app.url.replace("http", "ws")}/_pagent/terminal?node=/dialog&agent=bot&cols=80&rows=24`);
+    await new Promise((r) => (ws.onmessage = r));
+    ws.send(JSON.stringify({ type: "input", data: "\r" }));
+    assert.equal(await reply, "chose A");
+    await until(async () => !(await app.get("/_pagent/prompts")).questions.some((q: any) => q.node === "/dialog"), "the card to go");
+    ws.close();
+  });
+
+  test("a dialog in an unattended run (a trigger's) is dismissed: nobody can answer it", async () => {
+    await ask("/alone", "!say up"); // its TUI is open
+    writeFileSync(join(app.root, "alone", "go.json"), "{}");
+    await until(async () => (await history("/alone")).includes("assistant: dismissed Rate this session"), "the dialog dismissed");
+    assert.match(app.log(), /dismissed a dialog in its terminal that nobody can answer \(an unattended run\): Rate this session/);
+    assert.ok(!(await app.get("/_pagent/prompts")).questions.some((q: any) => q.node === "/alone"), "no card");
   });
 
   test("interject: typed into its busy TUI, taken into the turn before its next step; both runs end with that turn", async () => {

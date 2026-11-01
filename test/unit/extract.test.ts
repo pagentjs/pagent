@@ -16,7 +16,7 @@ test("agents: cli picks the runner, sessionId pins a session, everything else is
   const r = analyze(page, "page.tsx");
   assert.deepEqual(r.errors, []);
   assert.deepEqual(r.agents, [
-    { cli: "claude", instructions: "_bot.md", name: "bot", runner: "claude-code" },
+    { cli: "claude", instructions: "_bot.md", name: "bot", runner: "claude" },
     { cli: "codex", name: "ops", runner: "codex", session: "abc" },
   ]);
 });
@@ -51,8 +51,12 @@ test("a remote agent: another pagent's node address, and nothing else; its node'
   assert.match(mergeManifest([two]).errors.join(), /agent "sam" is a remote agent, so it is its node's only agent/);
 });
 
-test("an agent without cli or runner is an error; a runner may be a script's path", () => {
-  assert.match(analyze(`export const agents = { x: { model: "m" } };`).errors.join(), /agent "x" needs cli/);
+test("an agent without cli or runner runs the default harness (runner \"\", filled in by the node); a wrong cli is an error; a runner may be a script's path", () => {
+  const x = analyze(`export const agents = { x: { model: "m" } };`);
+  assert.deepEqual(x.errors, []);
+  assert.equal(x.agents[0].runner, "");
+  assert.equal(analyze(`export const agents = { x: { cli: "codex" } };`).agents[0].runner, "codex");
+  assert.match(analyze(`export const agents = { x: { cli: "gpt" } };`).errors.join(), /agent "x": cli is the harness, one of "claude", "codex"[^(]*\(or leave it out/);
   assert.equal(analyze(`export const agents = { x: { runner: "/abs/fake.ts" } };`).agents[0].runner, "/abs/fake.ts");
 });
 
@@ -87,7 +91,7 @@ test("declarations must be literals; bad triggers and reserved tool names say wh
 
 test("a turn trigger: an agent of the node (or true), a when of its own", () => {
   const record = { ...analyze(""), actions: [{ name: "record", file: "actions.ts" }] };
-  const main = { ...analyze(""), agents: [{ name: "main", runner: "claude-code" }] };
+  const main = { ...analyze(""), agents: [{ name: "main", runner: "claude" }] };
   assert.deepEqual(analyze(`export const triggers = { r: { turn: "main", run: "record" }, any: { turn: true, run: "record" } };`).triggers, [
     { name: "r", turn: "main", run: "record" },
     { name: "any", turn: true, run: "record" },

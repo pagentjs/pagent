@@ -24,6 +24,29 @@ describe("runners say what they do", () => {
   const ask = (node: string, message: string) => app.post<{ text: string }>("/_pagent/ask", { node, agent: "bot", message }).then((r) => r.text);
   const status = (node: string) => app.get(`/_pagent/agent-status?node=${node}&agent=bot`);
 
+  // An app's own minimal runner: ask and history, no describe (as an app's `_runners/cli.ts` may be).
+  const own = realpathSync(mkdtempSync(join(tmpdir(), "pagent-minimal-runner-")));
+  const minimal = join(own, "cli.ts");
+  writeFileSync(
+    minimal,
+    `import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+let s = ""; for await (const c of process.stdin) s += c;
+const input = JSON.parse(s);
+const file = join(${JSON.stringify(own)}, "said.jsonl");
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+if (input.op === "ask") {
+  const text = "minimal: " + input.message;
+  appendFileSync(file, JSON.stringify({ q: input.message, a: text }) + "\\n");
+  out({ type: "start" }); out({ type: "text-start", id: "t" }); out({ type: "text-delta", id: "t", delta: text }); out({ type: "text-end", id: "t" });
+  out({ type: "data-result", data: { text }, transient: true }); out({ type: "finish" });
+} else if (input.op === "history") {
+  const said = existsSync(file) ? readFileSync(file, "utf8").split("\\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+  out({ type: "history", messages: said.flatMap((x, i) => [{ id: "u" + i, role: "user", parts: [{ type: "text", text: x.q }] }, { id: "a" + i, role: "assistant", parts: [{ type: "text", text: x.a }] }]) });
+}
+`,
+  );
+
   before(async () => {
     app = await testApp(
       {
@@ -31,6 +54,7 @@ describe("runners say what they do", () => {
         "moves/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
         "plain/page.tsx": page({ bot: { runner: fakeTuiRunner, tui: false } }),
         "quiet/page.tsx": page({ bot: { runner: fakeRunner } }),
+        "minimal/page.tsx": page({ bot: { runner: minimal } }),
       },
       // As if pagent were started inside a harness session (the engine's Claude Code runner names its variables).
       { env: { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "outer", CLAUDE_CONFIG_DIR: "/kept/config", CLAUDE_BIN: "/kept/claude" } },
@@ -39,8 +63,16 @@ describe("runners say what they do", () => {
   after(() => app.close());
 
   test("the engine's runners describe themselves; core has no names", () => {
-    assert.deepEqual(describeOf("claude-code"), { type: "describe", turns: "tui", outerSession: { marker: "CLAUDECODE", prefix: "CLAUDE", keep: ["CLAUDE_CONFIG_DIR", "CLAUDE_BIN"] }, strangers: true });
-    assert.deepEqual(describeOf("codex"), { type: "describe", turns: "thread" });
+    assert.deepEqual(describeOf("claude"), {
+      type: "describe",
+      harness: { id: "claude", title: "Claude Code" },
+      turns: "tui",
+      ops: ["last", "info", "usage", "trajectory", "holder", "move", "stranger", "interactive"],
+      interject: true,
+      sessions: "folder",
+      outerSession: { marker: "CLAUDECODE", prefix: "CLAUDE", keep: ["CLAUDE_CONFIG_DIR", "CLAUDE_BIN"] },
+    });
+    assert.deepEqual(describeOf("codex"), { type: "describe", harness: { id: "codex", title: "Codex" }, turns: "thread", ops: ["info", "usage", "trajectory", "move", "interactive", "service"], interject: true });
     // Its shared service says where it runs and what of the environment it leaves out; core only does that.
     const [svc] = opOf("codex", { op: "service" });
     assert.equal(svc.cwd, homedir());
@@ -65,6 +97,14 @@ describe("runners say what they do", () => {
     assert.equal((await status("/plain")).terminal.open, false);
     assert.equal(await ask("/quiet", "!say headless too"), "headless too");
     assert.equal((await status("/quiet")).terminal.open, false);
+  });
+
+  test("a runner without describe (ask and history only): a headless runner, its turns run and its history is read", async () => {
+    assert.equal(await ask("/minimal", "hello"), "minimal: (from /minimal) hello");
+    assert.deepEqual(lines((await app.get(`/_pagent/history?node=/minimal&agent=bot`)).messages), ["user (from /minimal): hello", "assistant: minimal: (from /minimal) hello"]);
+    const s = await status("/minimal");
+    assert.deepEqual([s.session.harness.id, s.session.can.terminal, s.session.can.trajectory], ["cli", false, false]);
+    rmSync(own, { recursive: true, force: true });
   });
 
   test("a /clear in the TUI: the agent moves to the new session, and is on its TUI's session while that runs", async () => {
@@ -105,7 +145,7 @@ describe("runners say what they do", () => {
   });
 });
 
-describe("claude-code: the agent's session is the one its TUI is on", () => {
+describe("claude: the agent's session is the one its TUI is on", () => {
   // No Claude Code: its registry (<config>/sessions/<pid>.json) and transcripts, written here, and a process standing in
   // for the TUI, started through a shell (as `shell: true` does): the app knows the shell's pid, Claude Code registers its own.
   const dir = mkdtempSync(join(tmpdir(), "pagent-cc-"));
@@ -137,15 +177,15 @@ describe("claude-code: the agent's session is the one its TUI is on", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const sessionOf = (input: Record<string, unknown>) => opOf("claude-code", { op: "info", cwd, stateDir, ...input }, env)[0].sessionId;
+  const sessionOf = (input: Record<string, unknown>) => opOf("claude", { op: "info", cwd, stateDir, ...input }, env)[0].sessionId;
 
   test("no TUI: the folder's latest; its TUI running (found under the shell): the TUI's", () => {
     assert.equal(sessionOf({}), "side");
     assert.equal(sessionOf({ tui: shell.pid }), "cleared");
-    const [h] = opOf("claude-code", { op: "history", cwd, stateDir, tui: shell.pid }, env);
+    const [h] = opOf("claude", { op: "history", cwd, stateDir, tui: shell.pid }, env);
     assert.deepEqual(h.messages.map((m: any) => m.parts[0].text), ["after the clear"]);
     // Its own TUI does not hold the session against it.
-    assert.equal(opOf("claude-code", { op: "holder", cwd, stateDir, tui: shell.pid }, env)[0].holder, null);
+    assert.equal(opOf("claude", { op: "holder", cwd, stateDir, tui: shell.pid }, env)[0].holder, null);
   });
 
   test("a pinned agent moves with its TUI, and stays there once the TUI is gone", () => {
@@ -153,12 +193,12 @@ describe("claude-code: the agent's session is the one its TUI is on", () => {
     assert.equal(sessionOf({ seedSession: "side", tui: shell.pid }), "cleared");
     assert.equal(sessionOf({ seedSession: "side" }), "cleared");
     // Another process on that session (here the same one, which the app does not know as the agent's TUI) holds it.
-    assert.equal(opOf("claude-code", { op: "holder", cwd, stateDir, seedSession: "side" }, env)[0].holder.pid, tuiPid);
+    assert.equal(opOf("claude", { op: "holder", cwd, stateDir, seedSession: "side" }, env)[0].holder.pid, tuiPid);
   });
 
   test("an agent of its own (cwd not its node's folder): never the folder's latest; its TUI starts its session, and it follows its TUI", () => {
     const own = { stateDir: join(dir, "own"), ownSession: true };
-    const tuiArgs = () => opOf("claude-code", { op: "interactive", cwd, ...own }, env)[0].args as string[];
+    const tuiArgs = () => opOf("claude", { op: "interactive", cwd, ...own }, env)[0].args as string[];
     const after = (a: string[], f: string) => (a.includes(f) ? a[a.indexOf(f) + 1] : null);
     assert.equal(sessionOf(own), null); // "side" is the folder's latest, and not its
     const first = tuiArgs();
@@ -174,7 +214,7 @@ describe("claude-code: the agent's session is the one its TUI is on", () => {
   });
 });
 
-test("claude-code: a live process holds its session in any locale (the registry has its start time in the C one)", () => {
+test("claude: a live process holds its session in any locale (the registry has its start time in the C one)", () => {
   // Claude Code records procStart as `ps -o lstart` prints it in UTC and the C locale ("Sat Oct 17 …"); in en_AU ps
   // prints the day first ("Sat 17 Oct …"), and a live process read that way would look like a reused pid. This test
   // process stands in for the one on the session.
@@ -186,17 +226,17 @@ test("claude-code: a live process holds its session in any locale (the registry 
     writeFileSync(join(config, "sessions", `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: "open", cwd: dir, kind: "interactive", procStart }));
     // An empty LC_ALL is no LC_ALL: the user's LANG and LC_TIME decide.
     const env = { CLAUDE_CONFIG_DIR: config, LC_ALL: "", LANG: "en_AU.UTF-8", LC_TIME: "en_AU.UTF-8" };
-    assert.equal(opOf("claude-code", { op: "holder", cwd: dir, stateDir: join(dir, "state"), seedSession: "open" }, env)[0].holder?.pid, process.pid);
+    assert.equal(opOf("claude", { op: "holder", cwd: dir, stateDir: join(dir, "state"), seedSession: "open" }, env)[0].holder?.pid, process.pid);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("claude-code: a long folder's sessions, where Claude Code keeps them (its name cut at 200, then a hash of the path)", () => {
+test("claude: a long folder's sessions, where Claude Code keeps them (its name cut at 200, then a hash of the path)", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-long-"));
   const config = join(dir, "config");
   const said = (text: string) => JSON.stringify({ type: "assistant", uuid: text, message: { role: "assistant", content: [{ type: "text", text }] } }) + "\n";
-  const last = (cwd: string) => opOf("claude-code", { op: "last", cwd, stateDir: join(dir, "state") }, { CLAUDE_CONFIG_DIR: config })[0];
+  const last = (cwd: string) => opOf("claude", { op: "last", cwd, stateDir: join(dir, "state") }, { CLAUDE_CONFIG_DIR: config })[0];
   // Folders that do not exist (taken as given); the names are what Claude Code 2.1.302's own function makes of them.
   const base = "/Users/x/Documents/Projects/my-notes-app/nodes/每周回顾/2026年10月第三周的项目进度与下周计划/a-very-long-folder-name-for-everything-that-happened-this-week-and-what-comes-next-and-more/drafts-and-notes-kept-for-later/";
   const named = "-Users-x-Documents-Projects-my-notes-app-nodes------2026-10---------------a-very-long-folder-name-for-everything-that-happened-this-week-and-what-comes-next-and-more-drafts-and-notes-kept-for-later---";
@@ -221,7 +261,7 @@ test("claude-code: a long folder's sessions, where Claude Code keeps them (its n
   }
 });
 
-test("claude-code: the last words and the session's title (its latest ai-title, or the name the user gave it), from the transcript's end", () => {
+test("claude: the last words and the session's title (its latest ai-title, or the name the user gave it), from the transcript's end", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-last-"));
   const cwd = join(dir, "work");
   mkdirSync(cwd);
@@ -230,7 +270,7 @@ test("claude-code: the last words and the session's title (its latest ai-title, 
   const line = (o: unknown) => JSON.stringify(o) + "\n";
   const said = (text: string) => line({ type: "assistant", uuid: text, timestamp: "2026-10-13T00:00:00Z", message: { role: "assistant", content: [{ type: "text", text }] } });
   const write = (...l: string[]) => writeFileSync(join(project, "s.jsonl"), l.join(""));
-  const last = () => opOf("claude-code", { op: "last", cwd, stateDir: join(dir, "state") }, { CLAUDE_CONFIG_DIR: join(dir, "config") })[0];
+  const last = () => opOf("claude", { op: "last", cwd, stateDir: join(dir, "state") }, { CLAUDE_CONFIG_DIR: join(dir, "config") })[0];
   try {
     write(line({ type: "ai-title", aiTitle: "First" }), said("one"), line({ type: "ai-title", aiTitle: "Rivers poem" }), said("Shall I go on?"));
     assert.deepEqual([last().text, last().title], ["Shall I go on?", "Rivers poem"]);
@@ -243,12 +283,12 @@ test("claude-code: the last words and the session's title (its latest ai-title, 
   }
 });
 
-describe("claude-code: what the app's root forbids holds for every agent of the app", () => {
+describe("claude: what the app's root forbids holds for every agent of the app", () => {
   // Claude Code reads .claude/settings.json only where it starts, and an agent starts in its node's folder.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pagent-deny-")));
   const node = join(root, "notes", "today");
   const settingsOf = (cwd: string, env: Record<string, string> = {}, input: Record<string, unknown> = {}) => {
-    const [c] = opOf("claude-code", { op: "interactive", cwd, stateDir: join(root, ".state"), ...input }, { CLAUDE_CONFIG_DIR: join(root, "config"), ...env });
+    const [c] = opOf("claude", { op: "interactive", cwd, stateDir: join(root, ".state"), ...input }, { CLAUDE_CONFIG_DIR: join(root, "config"), ...env });
     return JSON.parse(c.args[c.args.indexOf("--settings") + 1]).permissions;
   };
   before(() => {
@@ -317,7 +357,7 @@ describe("claude-code: what the app's root forbids holds for every agent of the 
   });
 });
 
-describe("claude-code: skills and MCP servers an agent declares replace the user's", () => {
+describe("claude: skills and MCP servers an agent declares replace the user's", () => {
   // The command its TUI would run (interactive op), against a config with a skill of the user's and a plugin they enabled.
   const dir = mkdtempSync(join(tmpdir(), "pagent-own-"));
   const config = join(dir, "config");
@@ -332,7 +372,7 @@ describe("claude-code: skills and MCP servers an agent declares replace the user
   });
   after(() => rmSync(dir, { recursive: true, force: true }));
 
-  const args = (input: Record<string, unknown>) => opOf("claude-code", { ...base, ...input }, env)[0].args as string[];
+  const args = (input: Record<string, unknown>) => opOf("claude", { ...base, ...input }, env)[0].args as string[];
   const settings = (a: string[]) => JSON.parse(a[a.indexOf("--settings") + 1]);
 
   test("nothing declared: the user's own, nothing taken away", () => {
@@ -359,7 +399,7 @@ describe("claude-code: skills and MCP servers an agent declares replace the user
   });
 });
 
-test("claude-code: a stranger's answer is a claude -p of its own, without tools, session or the user's customizations, its output capped", () => {
+test("claude: a stranger's answer is a claude -p of its own, without tools, session or the user's customizations, its output capped", () => {
   // A stand-in for Claude Code: it writes down how it was started, then answers as stream-json does.
   const dir = mkdtempSync(join(tmpdir(), "pagent-stranger-test-"));
   const bin = join(dir, "fake-claude.mjs");
@@ -388,7 +428,7 @@ if (process.env.OVER) {
   chmodSync(bin, 0o755);
   try {
     const input = { op: "stranger", message: "(from ip:10.0.0.9) …\n<message>\nhi\n</message>", systemPrompt: "You are answering a stranger.", maxOutputTokens: 120, options: { model: "haiku" } };
-    const chunks = opOf("claude-code", input, { CLAUDE_BIN: bin });
+    const chunks = opOf("claude", input, { CLAUDE_BIN: bin });
     assert.equal(chunks.find((c) => c.type === "data-result")?.data.text, "Hello, stranger.");
     const s = JSON.parse(readFileSync(seen, "utf8"));
     const flag = (f: string) => s.args[s.args.indexOf(f) + 1];
@@ -401,7 +441,7 @@ if (process.env.OVER) {
     assert.ok(!existsSync(s.cwd));
     assert.match(s.stdin, /<message>\nhi\n<\/message>$/);
     // Past its cap: what was written, cut short (not Claude Code's error).
-    const over = opOf("claude-code", input, { CLAUDE_BIN: bin, OVER: "1" });
+    const over = opOf("claude", input, { CLAUDE_BIN: bin, OVER: "1" });
     assert.equal(over.find((c) => c.type === "data-result")?.data.text, "Once upon a time, a fox …");
   } finally {
     rmSync(dir, { recursive: true, force: true });

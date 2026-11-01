@@ -18,6 +18,10 @@ export type Question = {
   kind: "question" | "permission" | "form";
   question: string;
   detail?: string; // e.g. the command a permission request is about
+  /** A plan the agent asks to go ahead with (a proposal: Claude Code's ExitPlanMode), as markdown: the card shows it rendered. */
+  plan?: string;
+  /** A permission request: what the tool it is about does (runners/src/lib/tools.ts, ToolKind), for how the card says it. */
+  toolKind?: string;
   options: string[];
   form?: Form;
   /**
@@ -40,6 +44,26 @@ type Pending = Question & {
 
 const pending = new Map<string, Pending>();
 
+/**
+ * Who hears that a question was asked, and that it was answered (or withdrawn: answer ""; a form: its outcome, never its
+ * values): the trajectory's waits on the person (agents/waits.ts).
+ */
+export type QuestionListener = (e: { type: "asked"; question: Question } | { type: "answered"; question: Question; answer: string; outcome?: Outcome }) => void;
+const listeners = new Set<QuestionListener>();
+export function onQuestion(l: QuestionListener): () => void {
+  listeners.add(l);
+  return () => void listeners.delete(l);
+}
+const tellListeners = (e: Parameters<QuestionListener>[0]) => {
+  for (const l of listeners) {
+    try {
+      l(e);
+    } catch (err) {
+      console.warn(`a question listener failed: ${(err as Error).message}`);
+    }
+  }
+};
+
 export function askUser(
   ref: { node: string; agent: string },
   question: string,
@@ -47,6 +71,8 @@ export function askUser(
   extra: {
     kind?: Question["kind"];
     detail?: string;
+    plan?: string;
+    toolKind?: string;
     form?: Form;
     say?: Question["say"];
     deliver?: Pending["deliver"];
@@ -57,10 +83,11 @@ export function askUser(
   } = {},
 ): Promise<string> {
   return new Promise((resolve) => {
-    const q: Question = { id: extra.id ?? randomUUID(), node: ref.node, agent: ref.agent, kind: extra.kind ?? (extra.form ? "form" : "question"), detail: extra.detail, question, options, ...(extra.form ? { form: extra.form } : {}), ...(extra.say ? { say: extra.say } : {}), createdAt: extra.createdAt ?? Date.now() };
+    const q: Question = { id: extra.id ?? randomUUID(), node: ref.node, agent: ref.agent, kind: extra.kind ?? (extra.form ? "form" : "question"), detail: extra.detail, ...(extra.plan ? { plan: extra.plan } : {}), ...(extra.toolKind ? { toolKind: extra.toolKind } : {}), question, options, ...(extra.form ? { form: extra.form } : {}), ...(extra.say ? { say: extra.say } : {}), createdAt: extra.createdAt ?? Date.now() };
     // onAnswer: at once, before whoever answered hears back (the answer is written down before that, commands.ts).
     pending.set(q.id, { ...q, deliver: extra.deliver, resolve: (a) => (extra.onAnswer?.(a), resolve(a)) });
     broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "question", question: q } });
+    tellListeners({ type: "asked", question: q });
     // Withdrawn: whoever asked stopped waiting (e.g. the user answered in the TUI itself).
     extra.signal?.addEventListener("abort", () => void answer(q.id, ""));
   });
@@ -91,6 +118,7 @@ export async function answer(id: string, text: string, values?: Record<string, s
     } else reply = "";
   }
   pending.delete(id);
+  tellListeners({ type: "answered", question: shown(q), answer: q.kind === "form" ? "" : reply, ...(outcome ? { outcome } : {}) });
   q.resolve(reply);
   broadcast({ type: "agent", node: q.node, agent: q.agent, event: { type: "answered", id, ...(outcome ? { outcome } : {}) } });
   return { ok: true };

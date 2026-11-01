@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@babel/parser": "^8.0.7",
+    "@xterm/headless": "^6.0.0",
     "ai": "^7.0.136",
     "esbuild": "^0.28.2",
     "node-pty": "^1.1.0",

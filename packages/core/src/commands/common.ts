@@ -60,7 +60,7 @@ export function nodeArg(ctx: Ctx, s: string, unmade = false): string {
     throw new Error(
       `no ${found.path} in this app: it would be an instance of ${found.code}, and none is made there. ` +
         (made.length ? `Its instances: ${made.join(", ")}. ` : "It has no instances yet. ") +
-        `A new one is made by opening its page, or with \`pagent tell --new ${found.path} "…"\``,
+        `A new one is made by opening its page, or with \`pagent tell --new ${found.path} "…"\` (\`pagent docs instances\`)`,
     );
   }
   return found.path;

@@ -1,6 +1,6 @@
 // The session belongs to the agent, not to the folder (SPEC 13.9): an agent that works in its node's own folder takes
 // that folder's latest session (`claude --continue`); one that works elsewhere (a project folder the instances of a
-// dynamic page share) starts a session of its own, remembers it, and resumes it. The real claude-code runner, with a
+// dynamic page share) starts a session of its own, remembers it, and resumes it. The real claude runner, with a
 // stand-in for Claude Code (CLAUDE_BIN) that keeps its transcripts where Claude Code does, in an isolated
 // CLAUDE_CONFIG_DIR.
 import assert from "node:assert/strict";

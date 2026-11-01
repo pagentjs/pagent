@@ -7,7 +7,7 @@ import { t, tWith, useLanguage } from "@pagent/bridge/i18n";
 export type NodeLoader = {
   /** again: not the first look (the code changed): an instance moved or removed meanwhile is not made again. */
   node(path: string, from?: string, again?: boolean): Promise<NodeInfo>;
-  module(path: string, file: "page" | "layout", version: string): Promise<{ default: ComponentType<any> }>;
+  module(path: string, file: "page" | "layout", version: string): Promise<{ default: ComponentType<any> } & Record<string, unknown>>;
   /** Call `cb` when the node's code may have changed (its own, or that of the nodes it falls through to) or everything should reload. */
   onChange(path: string, cb: () => void, sources?: string[]): () => void;
 };
@@ -50,6 +50,7 @@ export function NodeFrame({
   from,
   props = {},
   handlers = {},
+  part,
   children,
 }: {
   path: string;
@@ -57,6 +58,12 @@ export function NodeFrame({
   from?: string;
   props?: Record<string, unknown>;
   handlers?: Record<string, unknown>;
+  /**
+   * Another component the file exports, in place of its default (the home page's Settings: the app's part of the
+   * shell's Settings), with `children` before it (its heading). Nothing at all while it loads, when it fails to, or when
+   * the file has no such export.
+   */
+  part?: string;
   children?: ReactNode;
 }) {
   useLanguage();
@@ -91,13 +98,13 @@ export function NodeFrame({
     let alive = true;
     const version = info.version;
     loader.module(path, file, version).then(
-      (m) => alive && setMod({ Comp: m.default, version }),
+      (m) => alive && setMod({ Comp: (part ? m[part] : m.default) as ComponentType<any>, version }),
       (e) => alive && setError(String(e)),
     );
     return () => {
       alive = false;
     };
-  }, [loader, info?.version, path, file]);
+  }, [loader, info?.version, path, file, part]);
 
   const agentNames = (info?.manifest.agents ?? []).map((a) => a.name).join(",");
   const scope = useMemo<Scope>(() => {
@@ -110,6 +117,19 @@ export function NodeFrame({
   }, [parent, path, agentNames, handlers]);
 
   const errors = info?.manifest.errors ?? [];
+  if (part) {
+    if (typeof mod?.Comp !== "function") return null;
+    return (
+      <div className="pagent-node" data-path={path} data-part={part}>
+        {children}
+        <ScopeContext.Provider value={scope}>
+          <Boundary key={mod.version} path={path}>
+            <mod.Comp {...(info?.params ? { params: info.params } : {})} />
+          </Boundary>
+        </ScopeContext.Provider>
+      </div>
+    );
+  }
   return (
     <div className="pagent-node" data-path={path} data-file={file}>
       {error && <div className={/^no node at /.test(error) ? "pagent-muted pagent-missing" : "pagent-error"}>{error}</div>}

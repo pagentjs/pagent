@@ -14,7 +14,7 @@ import { CodexSubagents } from "../../packages/runners/src/lib/codex-items.ts";
 import { SubagentStream } from "../../packages/runners/src/lib/subagents.ts";
 import { repo, until } from "../lib/app.ts";
 
-const runner = join(repo, "packages/runners/src/claude-code.ts");
+const runner = join(repo, "packages/runners/src/claude.ts");
 const line = (o: unknown) => JSON.stringify(o) + "\n";
 const at = (s: number) => new Date(Date.parse("2026-10-13T07:00:00Z") + s * 1000).toISOString();
 
@@ -40,7 +40,7 @@ const assistant = (id: string, content: unknown[], s: number, stop: string | nul
 const agentCall = (id: string, description: string, type: string, extra: Record<string, unknown> = {}) => ({ type: "tool_use", id, name: "Agent", input: { description, subagent_type: type, prompt: `Please: ${description}`, ...extra } });
 const result = (id: string, text: string) => ({ type: "tool_result", tool_use_id: id, content: [{ type: "text", text }] });
 
-describe("claude-code: sub-agents in the history", () => {
+describe("claude: sub-agents in the history", () => {
   const f = claudeFixture();
   after(() => rmSync(f.dir, { recursive: true, force: true }));
 
@@ -119,9 +119,33 @@ describe("claude-code: sub-agents in the history", () => {
     // What else it read, for the server to watch.
     assert.ok(h.watch.includes(d) && h.watch.some((w: string) => w.endsWith("agent-a1.jsonl")));
   });
+
+  test("a fork: its transcript starts with the conversation it was forked from, its own call in it; only what follows is its", () => {
+    // Shaped like Claude Code 2.1.302's: meta agentType "fork", the parent's lines copied in first (issue
+    // history-fork-subagent-recursion: following the calls in them, its own among them, never ended).
+    const parent = user("look into it", 0) + assistant("p1", [agentCall("E1", "Earlier look", "Explore")], 1) + user([result("E1", "earlier")], 2) + assistant("p2", [agentCall("F1", "Fork it", "fork")], 3);
+    writeFileSync(join(f.project, "s2.jsonl"), parent + user([result("F1", "fork done")], 9) + assistant("p3", [{ type: "text", text: "all done" }], 10, "end_turn"));
+    const d = f.subs("s2");
+    writeFileSync(join(d, "agent-e1.meta.json"), JSON.stringify({ agentType: "Explore", description: "Earlier look", toolUseId: "E1", spawnDepth: 1 }));
+    writeFileSync(join(d, "agent-e1.jsonl"), user("Please: Earlier look", 1) + assistant("e1", [{ type: "text", text: "earlier" }], 2, "end_turn"));
+    writeFileSync(join(d, "agent-f1.meta.json"), JSON.stringify({ agentType: "fork", description: "Fork it", toolUseId: "F1", spawnDepth: 2 }));
+    writeFileSync(
+      join(d, "agent-f1.jsonl"),
+      parent + user("Fork directive: check the tests", 4) + assistant("f1", [{ type: "tool_use", id: "G1", name: "Grep", input: { pattern: "test" } }], 5, "tool_use") + user([result("G1", "3 files")], 6) + assistant("f2", [{ type: "text", text: "fork done" }], 7, "end_turn"),
+    );
+    const [h] = execFileSync(process.execPath, [runner], { input: JSON.stringify({ op: "history", cwd: f.cwd, stateDir: join(f.dir, "state2"), sessionId: "s2" }), encoding: "utf8", env: { ...process.env, ...f.env } })
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const parts = h.messages.flatMap((m: any) => m.parts) as any[];
+    const subs = parts.filter((p) => p.type === "data-subagent").map((p) => p.id);
+    assert.deepEqual(subs, ["E1", "F1"], "each once: the earlier one is not followed again inside the fork");
+    const steps = parts.filter((p) => p.type === "data-subagent-step" && p.data.of === "F1").map((p) => p.data.part.toolName ?? p.data.part.text);
+    assert.deepEqual(steps, ["Grep", "fork done"], "the fork's own steps, not the parent's");
+  });
 });
 
-describe("claude-code: sub-agents live", () => {
+describe("claude: sub-agents live", () => {
   const f = claudeFixture();
   after(() => rmSync(f.dir, { recursive: true, force: true }));
 

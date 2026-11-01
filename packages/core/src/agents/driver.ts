@@ -38,6 +38,8 @@ export interface SessionDriver {
   recover(ctx: Ctx): Promise<void>;
   /** Give back what nobody uses (every minute). */
   closeQuiet(): void;
+  /** What it keeps running on a harness updated since (a shared service), started again once nobody needs it (every minute). */
+  refresh?(ctx: Ctx): Promise<void>;
   /** Stop the agent's turn in progress, as Esc in its TUI does: what was done, or null when it is not in a turn. */
   stop(ctx: Ctx, ref: AgentRef): Promise<string | null>;
   /** A driver with no runner (remote) answers the runner's quick ops itself: what the runner would have said, or null. */

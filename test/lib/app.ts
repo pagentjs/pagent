@@ -51,15 +51,20 @@ export type TestApp = {
   pagent: (...args: string[]) => string;
 };
 
-/** files: the app's, by path; env: added to the server's environment; host: where it listens (`pagent serve --host`). */
-export async function testApp(files: Record<string, string>, opts: { env?: Record<string, string>; host?: string } = {}): Promise<TestApp> {
+/**
+ * files: the app's, by path; env: added to the server's environment; host: where it listens (`pagent serve --host`); home:
+ * another test app's PAGENT_HOME, for two apps of one person (their settings, their daemon), which that app's close stops;
+ * prepare: more to do in the app's folder before its first commit and its server (link an example's node_modules).
+ */
+export async function testApp(files: Record<string, string>, opts: { env?: Record<string, string>; host?: string; home?: string; prepare?: (root: string) => void } = {}): Promise<TestApp> {
   const base = mkdtempSync(join(tmpdir(), "pagent-test-"));
   const root = join(base, "app");
-  const home = join(base, "home");
+  const home = opts.home ?? join(base, "home");
   for (const [rel, content] of Object.entries({ "package.json": '{ "name": "test-app", "private": true, "type": "module" }\n', ...files })) {
     mkdirSync(dirname(join(root, rel)), { recursive: true });
     writeFileSync(join(root, rel), content);
   }
+  opts.prepare?.(root);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "ignore" });
   git("init", "-q", "-b", "main");
   git("add", "-A");
@@ -92,6 +97,9 @@ export async function testApp(files: Record<string, string>, opts: { env?: Recor
       }
     },
     async start() {
+      // The shell first, under the lock the e2e files share: test files start servers at once, and two servers each
+      // building a stale shell (after a change to its sources) trip over each other's output folder.
+      (await import("./shell.ts")).buildShell();
       const out = (await import("node:fs")).openSync(logFile, "a");
       server = spawn(process.execPath, [cli, "serve", root, "--port", String(port), ...(opts.host ? ["--host", opts.host] : [])], { env, stdio: ["ignore", out, out] });
       for (let i = 0; ; i++) {

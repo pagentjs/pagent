@@ -5,12 +5,12 @@
 import { attachProc, listProcs, procOp, spawnProc, type ProcEvent, type ProcInfo } from "../daemon-client.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { harnessEnv } from "../shell-env.ts";
-import { isBusy, pressKeys, terminalOf } from "../terminal.ts";
+import { isBusy, pressKeys, stopTerminal, terminalOf, whenClosed } from "../terminal.ts";
 import type { SessionDriver, Turn } from "./driver.ts";
 import { runnerOp } from "./history.ts";
-import { agentInput, lineReader, runnerBase, runnerScript } from "./runner.ts";
+import { agentInput, canDo, lineReader, runnerBase, runnerScript } from "./runner.ts";
 import { activeRun, chunkHandler, known, newRun, schedule, taken, userMessage } from "./runs.ts";
-import { endFollow, runsInTui, startTui, tuiInterject, tuiInterjects, tuiTurn, tuiUnavailable } from "./tui.ts";
+import { endFollow, runsInTui, startTui, tuiInterject, tuiInterjects, tuiStale, tuiTurn, tuiUnavailable } from "./tui.ts";
 import type { Conflict, Ctx, Holder, Run } from "./types.ts";
 
 export const typed: SessionDriver = {
@@ -36,7 +36,19 @@ async function turn({ ctx, run, push, input, decl, message }: Turn): Promise<str
   let holder: Holder | undefined;
   for (const since = Date.now(); ; holder = undefined) {
     for (let tries = 0; tries < 2; tries++) {
-      let term = terminalOf(ref);
+      // Typed into its terminal only when its runner follows a turn there (a TUI runner); otherwise a terminal that is
+      // open is the person's, and the turn runs headless.
+      let term = (await canDo(decl, "follow")) ? terminalOf(ref) : undefined;
+      // Its TUI runs a declaration that changed since (a settings page wrote another model), or a harness updated since:
+      // started again on its session first, with what is current, unless someone is in it (the page says so, and offers
+      // the restart).
+      const stale = term && !term.viewers.size && !isBusy(term.status?.state) && (await tuiStale(ctx, ref, term));
+      if (term && stale) {
+        console.log(`restarting the terminal of ${keyOf(ref)}: ${stale === "update" ? "its harness was updated" : "its declaration changed"} since it started`);
+        stopTerminal(term);
+        await whenClosed(term);
+        term = undefined;
+      }
       if (term) tuiUnavailable.delete(keyOf(ref));
       else if ((await runsInTui(decl, ref)) && !(holder = (await conflict(ctx, ref))?.holder)) term = (await startTui(ctx, ref)) ?? undefined;
       if (!term) break;

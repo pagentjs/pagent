@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// runner:claude-code — drives the native `claude` CLI. Sessions are Claude Code's own jsonl; this runner
+// runner:claude — drives the native `claude` CLI (Claude Code). Sessions are Claude Code's own jsonl; this runner
 // only remembers which session belongs to the agent (stateDir/session.json) and resumes it.
 //
-// Contract: one JSON object on stdin, JSONL on stdout.
+// The runner contract is lib/contract.ts (SPEC 13.18): one JSON object on stdin, JSONL on stdout. What this one does:
 //   { op: "ask", message, cwd, stateDir, env, agentSocket, permissionUrl, pluginDirs, skills?, mcps?, systemPrompt, options, appRoot? }
 //     → AI SDK UIMessageChunk lines; metadata as transient data chunks (data-session, data-result; data-user: the id the
 //     transcript keeps the turn's message under, which the history shows it under: core agents/ids.ts)
@@ -20,12 +20,16 @@
 //     follow) ends with the same as a data-usage chunk
 //   { op: "stranger", message, systemPrompt, maxOutputTokens, options } → the chunks of a one-off answer to a stranger
 //     (SPEC 13.7): no tools, no session, its output capped (strangerOp)
-//   { op: "describe" } → {type:"describe", turns, outerSession, strangers}: what the core goes by (agents.ts, Capabilities)
+//   { op: "describe" } → {type:"describe", harness, turns, ops, interject, outerSession}: what the core goes by
 //   { op: "move", from, to, cwd, stateDir } → {type:"moved", sessions}: the agent's folder moved (pagent mv); its sessions
 //     are moved to Claude Code's project of the new folder (moveOp)
+//   { op: "trajectory", cwd, stateDir } → {type:"trajectory", records, file, watch}: the session as a timeline
+//     (lib/trajectory.ts, lib/claude-trajectory.ts), its sub-agents' transcripts in it
 // Every op but describe may get `tui`, the pid of the agent's TUI while it runs: the session it is on is the agent's;
 // and `ownSession`: the agent works in a folder that is not its node's, so its session is its own (stateDir/session.json,
 // started fresh), never that folder's latest (SPEC 13.9).
+// Each tool call says what it does (toolMetadata, lib/claude-tools.ts). A permission prompt goes to the app through a
+// PermissionRequest hook: this script, run as `claude.ts --permission-hook <url>` (permissionHook).
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -33,16 +37,22 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { UIMessage, UIMessageChunk } from "ai";
-import { AGENT_TOOLS, addSubagents, notification, outcomeOfResult, streamNotification, SubagentWatcher, type Outcome } from "./lib/claude-subagents.ts";
+import { AGENT_TOOLS, addSubagents, notification, outcomeOfResult, readMetas, streamNotification, subagentsDir, SubagentWatcher, type Outcome } from "./lib/claude-subagents.ts";
+import { claudeTrajectory } from "./lib/claude-trajectory.ts";
 import { StreamSaid, transcriptUsage } from "./lib/claude-usage.ts";
+import { claudeTool, claudeToolLive } from "./lib/claude-tools.ts";
 import { gitRoot, loadSession, realPath, saveSession } from "./lib/common.ts";
-import { spawnHarness } from "./lib/process.ts";
+import type { Describe } from "./lib/contract.ts";
+import { askApp } from "./lib/permission.ts";
+import { spawnError, spawnHarness } from "./lib/process.ts";
+import { annotate } from "./lib/tools.ts";
+import type { TrajectoryRecord } from "./lib/trajectory.ts";
 import type { SessionUsage } from "./lib/usage.ts";
 
 const env = (k: string) => process.env[`PAGENT_${k}`];
 
 type Input = {
-  op: "ask" | "history" | "last" | "info" | "interactive" | "holder" | "follow" | "usage" | "describe" | "stranger" | "move";
+  op: "ask" | "history" | "last" | "info" | "interactive" | "holder" | "follow" | "usage" | "describe" | "stranger" | "move" | "trajectory";
   from?: string; // move: the folder the agent worked in (real path), and where it works now
   to?: string;
   message?: string;
@@ -65,21 +75,25 @@ type Input = {
   appRoot?: string; // the app's folder: what its .claude/settings forbid holds for every agent of the app (appRules)
 };
 
+// Every tool call says what it does; in a turn as it happens (ask, follow), a proposal with its plan file as it is now.
+let liveTurn = false;
+const said = annotate((name, input, output) => (liveTurn ? claudeToolLive : claudeTool)(name, input, output));
 const out = (
   chunk:
     | UIMessageChunk
     | { type: "history"; messages: UIMessage[]; file?: string; watch?: string[] }
     | { type: "last"; text: string | null; at: string | null; lastAt: string | null; title: string | null; file: string | null }
     | { type: "info"; sessionId: string | null; resume: string | null }
-    | { type: "command"; command: string; args: string[]; cwd: string; env?: Record<string, string>; trust?: { prompt: string; keys: string[]; harness: string }; keys?: Record<string, string[]> }
+    | { type: "command"; command: string; args: string[]; cwd: string; env?: Record<string, string>; trust?: { prompt: string; keys: string[]; harness: string }; keys?: Record<string, string[]>; prompt?: string }
     | { type: "holder"; holder: Holder | null; choices: ("fork" | "open")[] }
     | { type: "mark" }
     | { type: "usage"; usage: SessionUsage | null; file: string | null }
     | { type: "taken"; text: string; id?: string }
     | { type: "moved"; sessions: number }
-    | { type: "describe"; turns: "tui"; outerSession: { marker: string; prefix: string; keep: string[] }; strangers: true },
+    | { type: "trajectory"; records: TrajectoryRecord[]; file?: string; watch?: string[] }
+    | Describe,
 ) =>
-  process.stdout.write(JSON.stringify(chunk) + "\n");
+  process.stdout.write(JSON.stringify(said(chunk)) + "\n");
 
 const configDir = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 const projectsDir = () => join(configDir(), "projects");
@@ -166,8 +180,9 @@ function gitRules(cwd: string): string[] {
 
 /**
  * Settings layered over the user's own, as one --settings: what the environment adds (PAGENT_CLAUDE_SETTINGS,
- * JSON or a file; e.g. which credentials to use), plus an HTTP PermissionRequest hook to the app, so a permission
- * prompt becomes a card in the app (and, in a TUI, the TUI's own prompt shows too: whoever answers first decides).
+ * JSON or a file; e.g. which credentials to use), plus a PermissionRequest hook to the app (permissionHook), so a
+ * permission prompt becomes a card in the app (and, in a TUI, the TUI's own prompt shows too: whoever answers first
+ * decides).
  */
 const settingsArgs = (input: Input, skills: OwnSkills | null, tui = false) => {
   const raw = env("CLAUDE_SETTINGS");
@@ -195,7 +210,9 @@ const settingsArgs = (input: Input, skills: OwnSkills | null, tui = false) => {
     settings.sandbox = { ...settings.sandbox, network: { ...network, allowUnixSockets: [...(network.allowUnixSockets ?? []), input.agentSocket] } };
   }
   if (input.permissionUrl) {
-    const hook = { matcher: "*", hooks: [{ type: "http", url: input.permissionUrl, timeout: 3600 }] };
+    const q = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
+    const command = [process.execPath, SELF, "--permission-hook", input.permissionUrl].map(q).join(" ");
+    const hook = { matcher: "*", hooks: [{ type: "command", command, timeout: 3600 }] };
     settings.hooks = { ...settings.hooks, PermissionRequest: [...(settings.hooks?.PermissionRequest ?? []), hook] };
   }
   return ["--settings", JSON.stringify(settings)];
@@ -241,7 +258,8 @@ function rootPath(rule: string, root: string): string {
   return `${tool}(/${literal}${p.startsWith("/") ? p : /\/./.test(p) ? `/${p}` : `/**/${p}`})`;
 }
 
-const STATUSLINE = join(dirname(fileURLToPath(import.meta.url)), "lib", "statusline.ts");
+const SELF = fileURLToPath(import.meta.url);
+const STATUSLINE = join(dirname(SELF), "lib", "statusline.ts");
 
 /**
  * The TUI's status line goes through pagent's (lib/statusline.ts): Claude Code tells the model's context window and the
@@ -376,7 +394,7 @@ async function askOp(input: Input) {
   const code: number = await new Promise((r) => child.on("close", (c) => r(c ?? 1)));
   clearInterval(polling);
   t.poll();
-  if (code !== 0 && !t.finished) out({ type: "error", errorText: stderr.trim().slice(-2000) || `claude exited with ${code}` });
+  if (code !== 0 && !t.finished) out({ type: "error", errorText: spawnError(child) ?? (stderr.trim().slice(-2000) || `claude exited with ${code}`) });
   if (!t.finished) out({ type: "finish" });
   process.exitCode = code;
 }
@@ -454,7 +472,7 @@ async function strangerOp(input: Input) {
     for (const c of [{ type: "text-start", id }, { type: "text-delta", id, delta: text }, { type: "text-end", id }] as UIMessageChunk[]) out(c);
     out({ type: "data-result", data: { text }, transient: true });
   } else {
-    out({ type: "error", errorText: over ? `the answer ran past its cap (${cap} output tokens) before any of it was written: a higher \`strangers\` lets it answer` : r?.text || stderr.trim().slice(-2000) || `claude exited with ${code}` });
+    out({ type: "error", errorText: over ? `the answer ran past its cap (${cap} output tokens) before any of it was written: a higher \`strangers\` lets it answer` : spawnError(child) ?? (r?.text || stderr.trim().slice(-2000) || `claude exited with ${code}`) });
   }
   out({ type: "finish" });
   process.exitCode = text ? 0 : code || 1;
@@ -585,6 +603,9 @@ function toolResultText(content: unknown): string {
 
 // ---------------------------------------------------------------- history
 
+/** Claude Code's summary after a compaction, as it reads (for a transcript that does not mark it isCompactSummary). */
+const COMPACT_SUMMARY = /^\s*This session is being continued from a previous conversation/;
+
 /** A long message pasted into the TUI (how the app types into it) is stored wrapped. */
 const unpasted = (text: string) => text.replace(/^\s*<pasted_content id="[^"]*">\n?([\s\S]*?)\n?<\/pasted_content id="[^"]*">\s*$/, "$1");
 
@@ -669,7 +690,7 @@ function historyOp(input: Input) {
       if (!text.trim() || results.length) continue;
       // The summary the session goes on from after its context was compacted: Claude Code writes it as a user message
       // ("This session is being continued from a previous conversation…"), but nobody typed it.
-      if (e.isCompactSummary) {
+      if (e.isCompactSummary || COMPACT_SUMMARY.test(text)) {
         messages.push({ id: e.uuid ?? randomUUID(), role: "user", parts: [{ type: "text", text }], metadata: { kind: "compaction" } });
         assistant = null;
         compacted = true;
@@ -741,9 +762,14 @@ function interactiveOp(input: Input) {
   // A folder it never worked in (its git root) gets a trust dialog first, which defaults to "No, exit".
   const trust = { prompt: "Yes, I trust this folder", keys: ["\x1b[B", "\r"], harness: "Claude Code" };
   // Esc stops the turn in progress (Claude Code writes "[Request interrupted by user]"); at a permission prompt, "1" is
-  // its first answer (Yes) and Esc cancels it (No).
-  const keys = { interrupt: ["\x1b"], allow: ["1"], deny: ["\x1b"] };
-  out({ type: "command", command: process.env.CLAUDE_BIN ?? "claude", args, cwd: input.cwd, env: input.env, trust, keys });
+  // its first answer (Yes) and Esc cancels it (No); any other dialog (its product prompts: "esc not now") Esc dismisses.
+  const keys = { interrupt: ["\x1b"], allow: ["1"], deny: ["\x1b"], dismiss: ["\x1b"] };
+  // Its permission prompt, as its OSC 7501 status says it: "approve Bash: ls -la /tmp | head -3".
+  const prompt = String.raw`^approve (\S+?):\s*([\s\S]*)$`;
+  // Of the product prompts it puts up in a TUI, the session-quality survey is the one with a switch of its own: off in
+  // an agent's TUI, mostly unwatched. The others (the autocompact offer, 2.1.304) have none; the core makes them a card.
+  const quiet = { ...input.env, CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: "1" };
+  out({ type: "command", command: process.env.CLAUDE_BIN ?? "claude", args, cwd: input.cwd, env: quiet, trust, keys, prompt });
 }
 
 /** The same session from outside the app. */
@@ -1073,6 +1099,22 @@ function usageOp(input: Input) {
   out({ type: "usage", usage, file });
 }
 
+// ---------------------------------------------------------------- trajectory
+
+/** The session as a timeline: its transcript and its sub-agents' (read-only; the transcript stays the truth). */
+function trajectoryOp(input: Input) {
+  const sessionId = currentSession(input);
+  const file = sessionId ? findTranscript(input.cwd, sessionId) : null;
+  if (!file) return out({ type: "trajectory", records: [] });
+  const dir = subagentsDir(file);
+  const metas = readMetas(dir);
+  const records = claudeTrajectory(readFileSync(file, "utf8"), (id) => {
+    const found = metas.get(id);
+    return found && existsSync(found.file) ? { meta: found.meta, text: readFileSync(found.file, "utf8") } : null;
+  });
+  out({ type: "trajectory", records, file, watch: existsSync(dir) ? [dir, ...[...metas.values()].map((m) => m.file).filter((f) => existsSync(f))] : [] });
+}
+
 // ---------------------------------------------------------------- move
 
 /**
@@ -1121,13 +1163,47 @@ function moveOp(input: Input) {
  * files, CLAUDE_CODE_NO_FLICKER …). Kept: where Claude keeps its config (an isolated CLAUDE_CONFIG_DIR is the
  * environment's choice) and which binary to run. It answers strangers (strangerOp).
  */
-const describeOp = () => out({ type: "describe", turns: "tui", outerSession: { marker: "CLAUDECODE", prefix: "CLAUDE", keep: ["CLAUDE_CONFIG_DIR", "CLAUDE_BIN"] }, strangers: true });
+const describeOp = () =>
+  out({
+    type: "describe",
+    harness: { id: "claude", title: "Claude Code" },
+    turns: "tui",
+    ops: ["last", "info", "usage", "trajectory", "holder", "move", "stranger", "interactive"],
+    interject: true, // typed into its busy TUI, taken in between two tool calls
+    sessions: "folder", // an agent of its node's folder continues the folder's latest (--continue)
+    outerSession: { marker: "CLAUDECODE", prefix: "CLAUDE", keep: ["CLAUDE_CONFIG_DIR", "CLAUDE_BIN"] },
+  });
+
+// ---------------------------------------------------------------- the permission hook
+
+/**
+ * Claude Code's PermissionRequest hook, as a command (`claude.ts --permission-hook <url>`): the request it gives on
+ * stdin (tool_name, tool_input) goes to the app as pagent's own (lib/contract.ts, PermissionRequest: what the call
+ * does, an ExitPlanMode's plan read from its file), and the app's decision comes back as the hook's output. No decision
+ * (someone watches the TUI): no output, and Claude Code asks in its own prompt.
+ */
+async function permissionHook(url: string) {
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(c as Buffer);
+  const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  const tool = String(body.tool_name ?? "");
+  const input = body.tool_input ?? {};
+  const d = (await askApp(url, { tool, input, meta: claudeToolLive(tool, input) })).decision;
+  if (!d) return;
+  const decision = { behavior: d.allow ? "allow" : "deny", ...(d.message ? { message: d.message } : {}) };
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } }) + "\n");
+}
 
 // ---------------------------------------------------------------- main
 
+if (process.argv[2] === "--permission-hook") {
+  await permissionHook(process.argv[3]);
+  process.exit(0);
+}
 const chunks: Buffer[] = [];
 for await (const c of process.stdin) chunks.push(c as Buffer);
 const input = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Input;
+liveTurn = input.op === "ask" || input.op === "follow";
 if (input.op === "ask") await askOp(input);
 else if (input.op === "history") historyOp(input);
 else if (input.op === "last") lastOp(input);
@@ -1139,4 +1215,5 @@ else if (input.op === "usage") usageOp(input);
 else if (input.op === "describe") describeOp();
 else if (input.op === "stranger") await strangerOp(input);
 else if (input.op === "move") moveOp(input);
+else if (input.op === "trajectory") trajectoryOp(input);
 else out({ type: "error", errorText: `unknown op ${(input as Input).op}` });

@@ -6,16 +6,16 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { extname, join, normalize, sep } from "node:path";
+import { basename, extname, join, normalize, sep } from "node:path";
 import { engine, hasShell } from "./engine.ts";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { WebSocketServer } from "ws";
-import { activeRun, agentOf, agentStatus, ask, askOrDecline, saveAttachments, uploadFile, closeQuietAgents, conflictOf, follow, history, interactiveCommand, lastWords, lookAt, recoverAgents, redeliver, remoteAt, residency, sessionHandle, startRun, stopTurn, turnsQueued, unattended, untilRun, usageOf, whenIdle, type AskInput, type Ctx, type Run } from "./agents.ts";
+import { activeRun, agentOf, agentStatus, ask, askOrDecline, declOf, harnesses, harnessOfAgent, recordWaits, saveAttachments, trajectoryPage, trajectoryRecord, uploadFile, closeQuietAgents, refreshAgents, conflictOf, follow, history, interactiveCommand, lastWords, lookAt, restartTerminal, tuiStale, recoverAgents, redeliver, remoteAt, residency, sessionHandle, startRun, stopTurn, turnsQueued, unattended, unqueue, untilRun, usageOf, whenIdle, type AskInput, type Ctx, type Run } from "./agents.ts";
 import { restoreQuestions, runCommand } from "./commands.ts";
 import { registerApp } from "./daemon-client.ts";
 import { forClient, runAction } from "./actions.ts";
 import { callOf } from "./calls.ts";
-import { tell } from "./tell.ts";
+import { makeFor, tell } from "./tell.ts";
 import { readData, writeData } from "./data.ts";
 import { encode, encodingFor } from "./encoding.ts";
 import { answer, askUser, pendingPrompts } from "./questions.ts";
@@ -26,6 +26,7 @@ import { serveMcp } from "./mcp.ts";
 import { matchRoute, serveRemoteDoor, serveRoute } from "./routes.ts";
 import { presence, screenResult } from "./screen.ts";
 import { broadcast, onEvent, sse, watchTree } from "./events.ts";
+import { readSettings, settingsError, SettingsBroken, watchSettings, writeSettings, type Settings } from "./settings.ts";
 import { ensureFork } from "./fork.ts";
 import { dynamicPages } from "./dynamic.ts";
 import { clientInfo, Nodes } from "./nodes.ts";
@@ -33,7 +34,7 @@ import { canonical, codeOf, hasCode, instancePathError, instancesOf, isNode, nod
 import { madeOf, migrateRecords, shownPath } from "./made.ts";
 import { moveNode, removeInstance } from "./moves.ts";
 import { movedText } from "./commands/nodes.ts";
-import { COOKIE, isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
+import { cookieName, isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
 import { createKey, presentedKey, reaches, resolveKey, revokeKey, type KeyHolder } from "./keys.ts";
 
 const env = (k: string) => process.env[`PAGENT_${k}`];
@@ -75,17 +76,34 @@ const TYPES: Record<string, string> ={ ".html": "text/html; charset=utf-8", ".js
  *  permission, an action's) could sit under that page's own, and the user's click would be the app's (clickjacking). */
 const FRAMING = { "content-security-policy": "frame-ancestors 'self'", "x-frame-options": "SAMEORIGIN" };
 
-/** A file of the built shell, or its index.html for any route (the shell routes on the client). */
-function serveShell(res: ServerResponse, pathname: string) {
+/**
+ * A file of the built shell, or its index.html for any route (the shell routes on the client). That page carries the
+ * person's settings as they are now (window.__PAGENT_SETTINGS__, before its own scripts), for its first paint: each app
+ * is its own origin, so what this browser remembers from this one may be older than the file.
+ */
+function serveShell(res: ServerResponse, pathname: string, settings: () => object, key: string | null) {
   const file = normalize(join(engine.shell, decodeURIComponent(pathname)));
   const asset = file.startsWith(engine.shell + sep) && existsSync(file) && statSync(file).isFile();
-  const path = asset ? file : join(engine.shell, "index.html");
+  const index = join(engine.shell, "index.html");
+  const path = asset ? file : index;
   res.writeHead(200, {
     "content-type": TYPES[extname(path)] ?? "application/octet-stream",
     "cache-control": asset && pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache",
     ...(path.endsWith(".html") ? FRAMING : {}),
   });
-  res.end(readFileSync(path));
+  if (path !== index) return void res.end(readFileSync(path));
+  const inline = JSON.stringify(settings()).replace(/</g, "\\u003c"); // never a "</script>" in it
+  const own = key ? `window.__PAGENT_KEY__ = ${JSON.stringify(key)};` : "";
+  res.end(readFileSync(path, "utf8").replace("<head>", `<head><script>window.__PAGENT_SETTINGS__ = ${inline};${own}</script>`));
+}
+
+/** The app's icon (icon.png at its root, else the shell's) and its size, from the PNG's header. */
+function appIcon(root: string): { file: string | null; size: [number, number] | null } {
+  const file = [join(root, "icon.png"), join(engine.shell, "icon.png")].find((f) => existsSync(f)) ?? null;
+  if (!file) return { file, size: null };
+  const head = readFileSync(file).subarray(0, 24);
+  const png = head.length === 24 && head.toString("latin1", 12, 16) === "IHDR";
+  return { file, size: png ? [head.readUInt32BE(16), head.readUInt32BE(20)] : null };
 }
 
 /** Stream a run as an AI SDK UI message stream (SSE), replaying what already happened. */
@@ -159,6 +177,13 @@ export function startServer(opts: ServerOptions) {
   const host = opts.host ?? "127.0.0.1";
   const remote = isLoopbackHost(host) ? null : remoteAccess(root, localName);
   remoteOpen = !!remote;
+  /** The owner key, for a request from another device that has passed the check (it holds the key): what a page of
+   *  it needs to hand the key on (a home screen's app, index.html). Null for this machine's own. */
+  const deviceKey = (req: IncomingMessage): string | null => {
+    if (!remote) return null;
+    const from = (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
+    return isLoopbackHost(from) && localName(req.headers.host ?? "") ? null : remote.token;
+  };
   // Instances as an older pagent recorded them (or did not) are recorded as this one does (made.ts, SPEC 13.11).
   migrateRecords(root);
   const nodes = new Nodes(root);
@@ -169,6 +194,16 @@ export function startServer(opts: ServerOptions) {
   // beyond loopback.
   nodes.self = remote ? `http://${host === "0.0.0.0" || host === "::" ? (localAddresses()[0] ?? "127.0.0.1") : host}:${port}` : ctx.baseUrl;
   watchTree(root, (file) => nodes.usersOf(file));
+  // Every question asked of the person, and when it was answered: the waits on a trajectory (agents/waits.ts).
+  recordWaits(ctx);
+  // The person's settings, the same for every app of theirs (settings.ts): a change, made in any of them or by hand,
+  // reaches this one's pages.
+  const settings = watchSettings((s, rev) => broadcast({ type: "settings", settings: s, rev }));
+  /** The settings now, with their rev (the file as it is read now: a change the watcher has not seen yet is one). */
+  const settingsNow = () => {
+    const now = readSettings();
+    return { ...now, rev: settings.changed(now) };
+  };
   onEvent((e) => {
     if (e.type !== "code") return;
     nodes.changed(); // what was read or compiled is read again
@@ -203,8 +238,9 @@ export function startServer(opts: ServerOptions) {
     }
   })();
   void ready.then(() => startTriggers(ctx));
-  // Agents are resident by default; the ones declared resident: false give their process back when quiet.
-  setInterval(() => (void closeQuiet((ref) => residency(ctx, ref)), closeQuietAgents()), 60_000).unref();
+  // Agents are resident by default; the ones declared resident: false give their process back when quiet. A harness
+  // updated meanwhile reaches the TUIs and the services that run an older one, once they are quiet (refreshAgents).
+  setInterval(() => (void closeQuiet((ref) => residency(ctx, ref)), closeQuietAgents(), void refreshAgents(ctx)), Number(process.env.PAGENT_SWEEP_MS) || 60_000).unref(); // tests make it short
 
   const server = createServer(async (req, res) => {
     await ready;
@@ -219,7 +255,7 @@ export function startServer(opts: ServerOptions) {
     const open = PUBLIC.test(url.pathname);
     let key: KeyHolder | null = null;
     if (open) {
-      const presented = presentedKey(req.headers, COOKIE);
+      const presented = presentedKey(req.headers, cookieName(root));
       if (presented) {
         const r = resolveKey(root, presented);
         if ("refused" in r) return json(res, 401, { error: r.refused === "expired" ? `refused: the key "${r.name}" has expired` : "refused: no such key (revoked, or never made here)" });
@@ -229,7 +265,8 @@ export function startServer(opts: ServerOptions) {
     }
     const access = open ? "ok" : remote?.check(req, url);
     if (access === "refused") return json(res, 401, { error: "refused: open the URL with ?token=… that `pagent serve` printed" });
-    if (access === "set") {
+    // The manifest's link carries another device's key (index.html): a home screen may fetch it without the cookie.
+    if (access === "set" && url.pathname !== "/_pagent/manifest.webmanifest") {
       url.searchParams.delete("token");
       res.writeHead(303, { "set-cookie": remote!.cookie, location: url.pathname + url.search });
       return void res.end();
@@ -303,12 +340,79 @@ export function startServer(opts: ServerOptions) {
           return json(res, 200, { ...clientInfo(await nodes.info(path)), ...(notes.length ? { notes } : {}) });
         }
 
+        // Added to a home screen (index.html): the app as its own app, opening at the page it was added from (start), by
+        // that page's title. Another device's start carries its key: a home screen's app keeps its own cookies, not the
+        // browser's, so it would open refused; with it, it opens as the browser did (a ?token= sets its cookie).
+        case "GET /_pagent/manifest.webmanifest": {
+          const start = new URL(q("start") || "/", "http://x").pathname;
+          const read = (() => {
+            try {
+              return decodeURIComponent(start);
+            } catch {
+              return start;
+            }
+          })();
+          const pages = await nodes.pages();
+          const here = pages.find((p) => p.url === read)?.title;
+          const home = pages.find((p) => p.path === "/")?.title ?? basename(root);
+          const key = deviceKey(req);
+          const icon = appIcon(root);
+          res.writeHead(200, { "content-type": "application/manifest+json", "cache-control": "no-cache" });
+          return res.end(
+            JSON.stringify({
+              name: here && read !== "/" ? `${here} · ${home}` : (here ?? home),
+              short_name: here ?? home,
+              start_url: key ? `${start}?token=${key}` : start,
+              scope: "/",
+              display: "standalone",
+              background_color: "#fafaf9",
+              theme_color: "#fafaf9",
+              icons: [{ src: "/_pagent/icon.png", sizes: icon.size ? `${icon.size[0]}x${icon.size[1]}` : "any", type: "image/png", purpose: "any" }],
+            }),
+          );
+        }
+
+        // Where a phone opens this app (the settings' QR code): its addresses on the LAN and the tailnet, each with the
+        // owner key; none when it listens on loopback only (HOST=0.0.0.0 opens it).
+        case "GET /_pagent/devices":
+          return json(res, 200, { listening: !!remote, urls: remote ? remote.urls(port) : [] });
+
+        // The app's icon: its own icon.png at its root (Next.js's app/icon.png), else pagent's.
+        case "GET /_pagent/icon.png": {
+          const icon = appIcon(root);
+          if (!icon.file) return json(res, 404, { error: "no icon (put an icon.png at the app's root)" });
+          res.writeHead(200, { "content-type": "image/png", "cache-control": "no-cache" });
+          return res.end(readFileSync(icon.file));
+        }
+
         case "GET /_pagent/module": {
           const compiled = await nodes.module(normPath(q("path")), q("file") as NodeFile);
           const code = compiled.errors.length
             ? `export default function CompileError() { throw new Error(${JSON.stringify(compiled.errors.join("\n"))}); }`
             : compiled.code;
           return sendEncoded(req, res, { "content-type": "text/javascript", "cache-control": "no-store" }, Buffer.from(code));
+        }
+
+        // The person's settings (settings.ts): read, and changed ({ key: value }, null: its default; 400 says why one
+        // cannot be). Every app's pages hear of the change on their event stream, this one's at once.
+        // harnesses: the ones there are (each engine runner's, as it names its harness), for the default harness's choice.
+        // rev, with both and with the event: which change they are, so a page keeps the newest of what reaches it.
+        case "GET /_pagent/settings":
+          return json(res, 200, { ...settingsNow(), harnesses: await harnesses() });
+
+        case "PUT /_pagent/settings": {
+          const patch = await readBody(req).catch(() => null);
+          const no = settingsError(patch);
+          if (no) return json(res, 400, { error: no });
+          let now: Settings;
+          try {
+            now = writeSettings(patch as Record<string, unknown>);
+          } catch (e) {
+            // The file is there and does not read: the person's, not written over (settings.ts).
+            if (e instanceof SettingsBroken) return json(res, 409, { error: e.message });
+            throw e;
+          }
+          return json(res, 200, { ...now, rev: settings.changed(now) });
         }
 
         case "GET /_pagent/data":
@@ -337,6 +441,18 @@ export function startServer(opts: ServerOptions) {
           return json(res, 200, { messages: untilRun(messages, activeRun(ref)) });
         }
 
+        // The agent's session as a timeline (agents/trajectory.ts): its records, long ones cut, and `at`; after=<at>: only
+        // what changed since (records, removed: ids, whole: false), or all of it (whole: true); id=<record>: that one whole.
+        case "GET /_pagent/trajectory": {
+          const ref = { node: normPath(q("node")), agent: q("agent") };
+          if (!(await declOf(ctx, ref).catch(() => undefined))) return json(res, 404, { error: `no agent ${ref.node}#${ref.agent}` });
+          if (q("id")) {
+            const record = await trajectoryRecord(ctx, ref, q("id"));
+            return record ? json(res, 200, { record }) : json(res, 404, { error: `no record ${q("id")} in ${ref.node}#${ref.agent}'s trajectory` });
+          }
+          return json(res, 200, await trajectoryPage(ctx, ref, q("after") || undefined));
+        }
+
         // useChat transport: send a message and stream the reply as a UI message stream. A person writing in a
         // conversation: their words reach the agent as they are; images they added, as files it reads (attachments.ts).
         case "POST /_pagent/chat": {
@@ -345,6 +461,24 @@ export function startServer(opts: ServerOptions) {
           const { text, user } = saveAttachments(ctx, ref, body.message);
           const run = await startRun(ctx, { ...ref, clientId: body.clientId, interject: body.interject, message: text, user, caller: { kind: "user" } });
           return streamRun(req, res, run);
+        }
+
+        // A person's message written while the agent works, queued here (not in the page, which may go): it waits for
+        // the agent's turn, shown in its status to every page (queued), and starts as any other run then. id: its run's.
+        case "POST /_pagent/queue": {
+          const body = (await readBody(req)) as Pick<AskInput, "node" | "agent"> & { message: UIMessage };
+          const ref = { node: normPath(body.node), agent: body.agent };
+          const { text, user } = saveAttachments(ctx, ref, body.message);
+          const run = await startRun(ctx, { ...ref, queue: true, message: text, user, caller: { kind: "user" } });
+          return json(res, 200, { id: run.id });
+        }
+
+        // Withdraw a queued message before its turn comes (its × in the console): it never reaches the agent. withdrawn:
+        // false when it no longer waits (its turn came already).
+        case "POST /_pagent/unqueue": {
+          const body = (await readBody(req)) as { node?: string; agent?: string; id?: string };
+          if (!body?.node || !body.agent || !body.id) return json(res, 400, { error: "node, agent and id" });
+          return json(res, 200, { withdrawn: unqueue({ node: normPath(body.node), agent: body.agent }, body.id) });
         }
 
         // An image a person added to a message (attachments.ts), for the conversation's thumbnail.
@@ -360,11 +494,13 @@ export function startServer(opts: ServerOptions) {
         case "GET /_pagent/agent-status": {
           const ref = { node: normPath(q("node")), agent: q("agent") };
           // A remote agent: whether the other app answers is looked at again when the last look is old.
-          const [handle, last, usage] = await Promise.all([q("handle") ? sessionHandle(ctx, ref) : undefined, q("said") ? lastWords(ctx, ref).catch(() => undefined) : undefined, usageOf(ctx, ref).catch(() => null), lookAt(ctx, ref)]);
+          const [handle, last, usage, can, stale] = await Promise.all([q("handle") ? sessionHandle(ctx, ref) : undefined, q("said") ? lastWords(ctx, ref).catch(() => undefined) : undefined, usageOf(ctx, ref).catch(() => null), harnessOfAgent(ctx, ref).catch(() => ({})), tuiStale(ctx, ref), lookAt(ctx, ref)]);
           // As it is once those are read (they ask its runner, which takes a moment): read before, a turn that started
-          // meanwhile would arrive after its run-start as "idle", and undo it.
+          // meanwhile would arrive after its run-start as "idle", and undo it. stale: its TUI runs an older declaration
+          // ("settings") or an older version of its harness ("update").
           const status = agentStatus(ref);
-          return json(res, 200, { ...status, ...last, session: { ...status.session, usage, ...handle } });
+          const terminal = stale && status.terminal.open ? { ...status.terminal, stale } : status.terminal;
+          return json(res, 200, { ...status, terminal, ...last, session: { ...status.session, usage, ...handle, ...can } });
         }
 
         // A node's action, a function of its "use server" file: a page calling the function it imported (from: the page,
@@ -392,6 +528,22 @@ export function startServer(opts: ServerOptions) {
           }
         }
 
+        // nodes.make from the app's server code ("pagent/server"): an instance of a dynamic page, made now with data files
+        // in it, recorded as made by whom the call runs for (as `tell --new` records it). It, as nodes.instances lists it.
+        case "POST /_pagent/make": {
+          const b = (await readBody(req)) as { call?: string; path?: string; data?: unknown };
+          const call = callOf(b.call);
+          if (!call) return json(res, 403, { error: "nodes.make works in the app's server code (an action, a route), as the engine runs it" });
+          if (b.data !== undefined && (typeof b.data !== "object" || b.data === null || Array.isArray(b.data))) return json(res, 400, { error: "nodes.make: data is { file: content }" });
+          try {
+            const path = await makeFor(ctx, String(b.path ?? ""), call.caller, (b.data ?? {}) as Record<string, unknown>);
+            const made = madeOf(root, path);
+            return json(res, 200, { path, url: shownPath(root, path), params: codeOf(root, path)?.params ?? {}, ...(made.by ? { createdBy: made.by } : {}), createdAt: made.at });
+          } catch (e) {
+            return json(res, 422, { error: (e as Error).message });
+          }
+        }
+
         // keys.create / keys.revoke from the app's server code ("pagent/server"), in a call the engine runs (calls.ts).
         case "POST /_pagent/key": {
           const b = (await readBody(req)) as { call?: string; create?: { scope?: string; name?: string; ttl?: string | number }; revoke?: string };
@@ -414,25 +566,49 @@ export function startServer(opts: ServerOptions) {
           return json(res, screenResult(id, text) ? 200 : 404, { ok: true });
         }
 
-        // Claude Code's PermissionRequest hook (HTTP), for its TUI and its headless turns alike; a Codex session sends
-        // its approvals here the same way. Unattended runs
-        // are declined; while someone watches the agent's terminal, the TUI's own prompt asks; otherwise the request
-        // becomes a permission card the shell shows on any page, and the answer is the decision.
+        // A harness asks before a tool runs (runners/src/lib/contract.ts, PermissionRequest): what the runner of any
+        // harness sends, for its TUI and its headless turns alike. Unattended runs are declined; while someone watches
+        // the agent's terminal, no decision (the harness asks in its own prompt); otherwise the request becomes a
+        // permission card the shell shows on any page, and the answer is the decision.
         case "POST /_pagent/permission": {
           const ref = { node: normPath(q("node")), agent: q("agent") };
-          const body = (await readBody(req)) as { tool_name?: string; tool_input?: Record<string, unknown> };
-          const decide = (behavior: "allow" | "deny", message?: string) =>
-            json(res, 200, { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior, ...(message ? { message } : {}) } } });
+          if (!(await declOf(ctx, ref).catch(() => undefined))) return json(res, 404, { error: `no agent ${ref.node}#${ref.agent}` });
+          const body = ((await readBody(req).catch(() => null)) ?? {}) as { tool?: string; input?: unknown; meta?: { kind?: string; command?: string; files?: string[]; url?: string; plan?: string }; detail?: string; tool_name?: unknown };
+          // A harness process older than this server (an old Claude Code TUI's HTTP hook, an old Codex session) asks in
+          // the shape it was started with ({ tool_name, tool_input }) and reads only a hook's answer: it is told no at
+          // once, in the words it reads, rather than shown a card about nothing or left waiting.
+          if (body.tool === undefined && body.tool_name !== undefined) {
+            const why = `${ref.node}#${ref.agent}: this harness process is older than the server: restart its agents (pagent daemon restart)`;
+            console.warn(`${why}; denied ${String(body.tool_name)}`);
+            return json(res, 200, { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: why } }, decision: { allow: false, message: why } });
+          }
+          const decide = (allow: boolean, message?: string) => json(res, 200, { decision: { allow, ...(message ? { message } : {}) } });
           if (terminalOf(ref)?.viewers.size && !unattended(ref)) return json(res, 200, {});
-          const input = body.tool_input ?? {};
-          const detail = typeof input.command === "string" ? input.command : typeof input.file_path === "string" ? input.file_path : JSON.stringify(input, null, 2);
+          const tool = body.tool || undefined;
+          const meta = body.meta ?? { kind: "other" };
+          // A question it asks the user (Claude Code's AskUserQuestion) in its TUI: no decision, so its own dialog shows
+          // the question with its choices, and that becomes the card (agents/tui.ts), not "Allow AskUserQuestion?".
+          if (meta.kind === "ask" && terminalOf(ref) && !unattended(ref)) return json(res, 200, {});
           const gone = new AbortController();
           res.on("close", () => res.writableEnded || gone.abort());
-          const say = { question: body.tool_name ? { key: "ask.allow", values: { tool: body.tool_name } } : { key: "ask.allowThisTool" }, options: [{ key: "ask.allowYes" }, { key: "ask.deny" }] };
-          const r = await askOrDecline(ref, () => askUser(ref, `Allow ${body.tool_name ?? "this tool"}?`, ["Allow", "Deny"], { kind: "permission", detail, say, signal: gone.signal }));
+          // A plan to go ahead with (a proposal: its plan, markdown): the card shows it rendered; only the option
+          // Approve allows; Keep planning keeps it planning, and anything typed ("Approve, but use pnpm") is what to change.
+          if (meta.kind === "proposal") {
+            const say = { question: { key: "ask.plan" }, options: [{ key: "ask.planYes" }, { key: "ask.planKeep" }] };
+            const r = await askOrDecline(ref, () => askUser(ref, "Go ahead with this plan?", ["Approve", "Keep planning"], { kind: "permission", plan: meta.plan ?? "", toolKind: meta.kind, say, signal: gone.signal }));
+            if (gone.signal.aborted) return;
+            if (r.declined) return decide(false, r.answer);
+            if (r.answer === "Approve") return decide(true);
+            const change = r.answer && r.answer !== "Keep planning" ? r.answer : "";
+            return decide(false, change ? `The user did not approve the plan yet. What they want changed: ${change}` : "The user did not approve the plan yet: keep planning.");
+          }
+          const detail = body.detail ?? meta.command ?? meta.files?.join("\n") ?? meta.url ?? JSON.stringify(body.input ?? {}, null, 2);
+          const say = { question: tool ? { key: "ask.allow", values: { tool } } : { key: "ask.allowThisTool" }, options: [{ key: "ask.allowYes" }, { key: "ask.deny" }] };
+          const r = await askOrDecline(ref, () => askUser(ref, `Allow ${tool ?? "this tool"}?`, ["Allow", "Deny"], { kind: "permission", detail, toolKind: meta.kind, say, signal: gone.signal }));
           if (gone.signal.aborted) return;
-          if (r.declined) return decide("deny", r.answer);
-          return /^allow/i.test(r.answer) ? decide("allow") : decide("deny", `The user declined${r.answer && !/^deny$/i.test(r.answer) ? `: ${r.answer}` : ""}.`);
+          if (r.declined) return decide(false, r.answer);
+          // Only the option Allow allows: anything typed ("allow, but not in src/") is a no, with what they said.
+          return r.answer === "Allow" ? decide(true) : decide(false, `The user declined${r.answer && r.answer !== "Deny" ? `: ${r.answer}` : ""}.`);
         }
 
         // An agent's `pagent` command (cli.ts), from its shell through the daemon's socket. Only an agent of this app
@@ -470,6 +646,18 @@ export function startServer(opts: ServerOptions) {
           return json(res, 200, { said: await stopTurn(ctx, { node: normPath(body.node), agent: body.agent }) });
         }
 
+        // Restart the agent's terminal on its session, to take its declaration and its harness as they are now (its
+        // status says the one running is stale): a page's button. 409 during a turn.
+        case "POST /_pagent/terminal/restart": {
+          const body = (await readBody(req)) as { node?: string; agent?: string };
+          if (!body?.node || !body.agent) return json(res, 400, { error: "node and agent" });
+          try {
+            return json(res, 200, { said: await restartTerminal({ node: normPath(body.node), agent: body.agent }) });
+          } catch (e) {
+            return json(res, 409, { error: (e as Error).message });
+          }
+        }
+
         // Moving a node and removing an instance of a dynamic page (moves.ts): the person's `pagent mv`, and server code's
         // nodes.move / nodes.remove ("pagent/server"). 422 with why when it is refused.
         case "POST /_pagent/move":
@@ -503,7 +691,7 @@ export function startServer(opts: ServerOptions) {
 
       }
       // The shell itself (the published package carries it prebuilt; in the repository vite serves it).
-      if (req.method === "GET" && !/^\/(_pagent|_cli|api|mcp)(\/|$)/.test(url.pathname) && hasShell()) return serveShell(res, url.pathname);
+      if (req.method === "GET" && !/^\/(_pagent|_cli|api|mcp)(\/|$)/.test(url.pathname) && hasShell()) return serveShell(res, url.pathname, settingsNow, deviceKey(req));
       json(res, 404, { error: "not found" });
     } catch (e) {
       console.error(e);

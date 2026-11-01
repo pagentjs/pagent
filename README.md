@@ -88,7 +88,8 @@ What it does today:
   triggers run it, routes import it. Secrets and `node:` modules stay on the server.
 - **Code is live, versions are git**: agents commit before and after a UI change; undo is a revert.
 - **Agents reach the app with the `pagent` command** in their shell (`pagent tree`, `pagent run /wechat --help`,
-  `pagent tell`, `pagent add`, …), the same for Claude Code and Codex; its help is always the app as it is now.
+  `pagent tell`, `pagent add`, …), the same for every harness; its help is always the app as it is now. What they
+  know about writing nodes is a short skill with chapters, which `pagent docs <topic>` prints from the running engine.
 - **App bridges** (macOS): a node that drives a native app through the accessibility API, in the background.
   Official ones live in `bridges/` and ship with the package; an agent installs one when a request needs it
   (`pagent add wechat`), or you do, with the same command. The bridge is copied into the app, as code you own and may change.

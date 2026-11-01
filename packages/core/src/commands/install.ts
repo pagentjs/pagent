@@ -19,7 +19,7 @@ export const addCommand: Command = {
     if (!a.pos[0] && typeof a.flags.app !== "string") throw new Error("which bridge? (`pagent bridges` lists them), or --app <Mac app> for a new one");
     try {
       const r = await addNode(ctx.root, { source: a.pos[0], app: typeof a.flags.app === "string" ? a.flags.app : undefined, path: typeof a.flags.path === "string" ? a.flags.path : undefined, cli: decl?.runner });
-      return `${describeAdd(r)}\nIts folder: ${folderOf(ctx, r.path)}. What it can do: pagent run ${r.path} --help`;
+      return `${describeAdd(r)}\nIts folder: ${folderOf(ctx, r.path)}. What it can do: pagent run ${r.path} --help. How bridges work: pagent docs bridges`;
     } catch (e) {
       return { stderr: `Nothing added: ${(e as Error).message}`, exit: 1 };
     }

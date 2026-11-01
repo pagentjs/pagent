@@ -15,6 +15,7 @@ export type AskInput = AgentRef & {
   replyTo?: AgentRef; // a delegation: when the run ends, its result is sent to this agent as a message
   replyPost?: ReplyPost; // a message from outside: when the run ends, its result is POSTed to the sender (tell.ts)
   interject?: boolean; // into the turn in progress, if the agent is in one and its harness takes that; else queued
+  queue?: boolean; // after the turn in progress, even where its driver sends at once: a message a person queued in a conversation
   unattended?: boolean; // nobody is there for it: it comes from a trigger, through the agents that passed it on (runs.ts)
   triggers?: string[]; // the triggers it comes from (runs.ts, lineageOf); none given: worked out from its caller
 };
@@ -60,8 +61,12 @@ export type Run = {
   sent?: Promise<void>;
   /** Someone stopped its turn (`pagent stop`, the Stop button): how it ends is no error. */
   stopped?: boolean;
+  /** Withdrawn while it waited for its turn (runs.ts, unqueue): it never starts. */
+  withdrawn?: boolean;
   /** When its last step came (a chunk), or it started: how long it has been quiet. */
   lastAt?: number;
+  /** The harness (runner) it was sent to, when the app sent it: the one an agent declared without a cli then keeps. */
+  harness?: string;
 };
 
 /** Another process that has an agent's session open (a CLI in a terminal, another app). */

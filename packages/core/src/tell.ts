@@ -71,14 +71,21 @@ export async function agentAbove(ctx: Ctx, from: AgentRef): Promise<AgentRef> {
 }
 
 /**
- * `tell --new`: the instance `to` names ("/studio/ws/fix#main"), made now, recorded as made by `by` (whom the call is
- * for: made.ts); an error if it is no instance, or is made.
+ * `tell --new`, and nodes.make (`data`: data files it is made with): the instance `to` names ("/studio/ws/fix", or its
+ * agent "/studio/ws/fix#main"), made now, recorded as made by `by` (whom the call is for: made.ts); an error if it is no
+ * instance, or is made. Its address, as the engine has it.
  */
-async function makeFor(ctx: Ctx, to: string, by: Caller) {
+export async function makeFor(ctx: Ctx, to: string, by: Caller, data?: Record<string, unknown>): Promise<string> {
   const node = nodeArg(ctx, to.split("#")[0] || "/", true);
-  if (!isInstance(ctx.root, node)) throw new Error(`tell: --new makes an instance of a dynamic page ([x] folders), and ${node} is a page of its own: tell it without --new`);
-  if (!notMade(ctx.root, node)) throw new Error(`tell: ${node} is there already, so --new would not make it: tell it without --new, or give the new one another address`);
-  await ctx.nodes.make(node, callerName(by) || undefined);
+  const told = !data;
+  if (!isInstance(ctx.root, node)) {
+    throw new Error(told ? `tell: --new makes an instance of a dynamic page ([x] folders), and ${node} is a page of its own: tell it without --new` : `nodes.make: ${node} is a page of its own, not an instance of a dynamic page ([x] folders)`);
+  }
+  if (!notMade(ctx.root, node)) {
+    throw new Error(told ? `tell: ${node} is there already, so --new would not make it: tell it without --new, or give the new one another address` : `nodes.make: ${node} is there already: give the new one another address`);
+  }
+  await ctx.nodes.make(node, callerName(by) || undefined, data);
+  return node;
 }
 
 const NO_KEY =
