@@ -31,6 +31,14 @@ export type AgentSpec = {
    */
   allow?: string[];
   /**
+   * Claude Code: start a fresh session once the one it is on began before today's 4:00 ("day", local; before 4:00 that
+   * is yesterday's), this Monday's 4:00 ("week"), or more than this many hours ago. Its next turn (or its TUI, as it
+   * opens) is then a new conversation, so its context does not grow for ever: keep what it must remember in data. It
+   * keeps its own session (as an agent with a cwd does), never its folder's latest. A TUI open across the boundary
+   * stays on its session until it closes (resident: false, or a number, closes a quiet one).
+   */
+  renew?: "day" | "week" | number;
+  /**
    * true (default): once its TUI is open, it stays open — the session keeps its process, like an ADE.
    * false, or a number of minutes (false = 10): load on demand — the TUI closes when nobody watches it and the
    * agent has been quiet that long; the next message resumes the session.

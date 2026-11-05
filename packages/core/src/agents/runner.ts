@@ -155,7 +155,8 @@ function agentCwd(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown>): strin
  * The session belongs to the agent (SPEC 13.9). Only an agent that works in its node's own folder takes that folder's
  * latest session (the folder is the session: `claude --continue` there is the same conversation). One that works
  * elsewhere (a cwd: a project folder that the instances of a dynamic page, or other agents, share) keeps its own
- * (ownSession): a fresh one the first time, remembered in its state (stateDir/session.json), resumed after that.
+ * (ownSession): a fresh one the first time, remembered in its state (stateDir/session.json), resumed after that. So
+ * does one that renews its session (decl.renew).
  */
 export function runnerBase(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown>) {
   const dir = nodeFolder(ctx, ref);
@@ -166,7 +167,8 @@ export function runnerBase(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown
     stateDir: join(dir, ".state", ref.agent),
     addDirs: cwd === dir ? [] : [dir], // an agent working elsewhere still reaches its node's own folder
     seedSession: typeof decl.session === "string" ? decl.session : undefined,
-    ...(resolve(cwd) !== dir ? { ownSession: true } : {}),
+    // An agent that renews its session keeps its own too: a fresh one must not be whatever else is latest in its folder.
+    ...(resolve(cwd) !== dir || decl.renew !== undefined ? { ownSession: true } : {}),
     ...(tui ? { tui } : {}),
   };
 }

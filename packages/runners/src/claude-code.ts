@@ -36,6 +36,7 @@ import type { UIMessage, UIMessageChunk } from "ai";
 import { AGENT_TOOLS, addSubagents, notification, outcomeOfResult, streamNotification, SubagentWatcher, type Outcome } from "./lib/claude-subagents.ts";
 import { StreamSaid, transcriptUsage } from "./lib/claude-usage.ts";
 import { gitRoot, loadSession, realPath, saveSession } from "./lib/common.ts";
+import { dueForRenew, type Renew } from "./lib/renew.ts";
 import { spawnHarness } from "./lib/process.ts";
 import type { SessionUsage } from "./lib/usage.ts";
 
@@ -60,7 +61,7 @@ type Input = {
   skills?: string[]; // declared: the agent's skills (SKILL.md folders) instead of the user's (ownSkills)
   mcps?: Record<string, unknown>; // declared: the agent's MCP servers instead of the user's (mcpArgs)
   systemPrompt?: string;
-  options?: { model?: string; tools?: string[]; permissionMode?: string; allow?: string[] };
+  options?: { model?: string; tools?: string[]; permissionMode?: string; allow?: string[]; renew?: Renew };
   maxOutputTokens?: number; // stranger: the cap on its answer
   appRoot?: string; // the app's folder: what its .claude/settings forbid holds for every agent of the app (appRules)
 };
@@ -142,7 +143,20 @@ function sessionArgs(input: Input, session: string | null): string[] {
 function currentSession(input: Input): string | null {
   const live = liveSession(input);
   if (live && pinned(input) && live !== loadSession(input.stateDir, input.seedSession)) saveSession(input.stateDir, live);
-  return live ?? (pinned(input) ? loadSession(input.stateDir, input.seedSession) : latestSession(input.cwd));
+  return live ?? (pinned(input) ? unlessRenewed(input, loadSession(input.stateDir, input.seedSession)) : latestSession(input.cwd));
+}
+
+/**
+ * Its remembered session, or none when the agent renews (options.renew) and that session began too long ago: then its
+ * next turn, or its TUI as it opens, starts a fresh one of its own (sessionArgs). When it began: its transcript's
+ * creation; one with no transcript yet (opened, no word said) is kept.
+ */
+function unlessRenewed(input: Input, session: string | null): string | null {
+  if (!session || input.options?.renew === undefined) return session;
+  const file = findTranscript(input.cwd, session);
+  if (!file) return session;
+  const st = statSync(file);
+  return dueForRenew(input.options.renew, st.birthtimeMs || st.ctimeMs) ? null : session;
 }
 
 /** The git commands an agent runs on its own code without asking: committing, and looking at what it committed. */
@@ -329,7 +343,7 @@ function ownSkills(input: Input): OwnSkills | null {
 async function askOp(input: Input) {
   // Pinned (adopted sessionId, or its own): resume exactly that session, or start its own. Otherwise the folder is the
   // session: --continue.
-  const session = pinned(input) ? loadSession(input.stateDir, input.seedSession) : null;
+  const session = pinned(input) ? unlessRenewed(input, loadSession(input.stateDir, input.seedSession)) : null;
 
   // Native, additive only: the user's own Claude Code (CLAUDE.md, plugins, MCP servers, settings, sessions)
   // plus the agent's identity for the `pagent` command (and its pre-approval), the engine skills and a short system
