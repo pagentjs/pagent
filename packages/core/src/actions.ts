@@ -175,7 +175,8 @@ export async function bundle(root: string, source: string, entry: string, own: s
   const mine = overlay.some((o) => codeFiles(o.dir).length > 0);
   const key = `${source}\n${entry}\n${mine ? own : (dirs?.slice(1).join("\n") ?? "")}`;
   const last = await bundles.get(key)?.catch(() => null);
-  if (last && fresh(last)) return last.file;
+  // The build lives in the OS temp folder, which macOS clears of files left unused for days: a server up that long rebuilds.
+  if (last && fresh(last) && existsSync(last.file)) return last.file;
   const next = (async (): Promise<Bundle> => {
     const stubbed = new Set<string>();
     const probed = new Set<string>();
