@@ -45,6 +45,17 @@ function depsRebuilt(id: string) {
   dispatch({ type: "resync" });
 }
 
+/**
+ * The shell this page runs: its built entry script, by its own address (null in Vite's dev server, which reloads by
+ * itself). The server says which it serves now; a page opened before pagent was updated runs the old one, which may not
+ * read what the new engine sends (a new kind of sender crashed a conversation), so it loads the new one. Drafts are kept
+ * in the browser (useDraft) and survive it.
+ */
+const ownBuild = /\/assets\/index-[\w-]+\.js$/.exec(new URL(import.meta.url).pathname)?.[0] ?? null;
+function shellServed(id: string | undefined) {
+  if (ownBuild && id && id !== ownBuild) location.reload();
+}
+
 // EventSource gives up for good on a non-200 response, and a proxy may keep a dead stream open after the
 // server restarts. So reconnect ourselves (on close, or when the server's ping stops) and tell everyone to resync.
 function connect(isRetry = false) {
@@ -58,6 +69,7 @@ function connect(isRetry = false) {
     if (isRetry || (first && readWithout)) dispatch({ type: "resync" });
   };
   source.addEventListener("ping", () => (heard = Date.now()));
+  source.addEventListener("shell", (m) => shellServed((JSON.parse(m.data) as { id?: string }).id));
   source.onmessage = (m) => {
     heard = Date.now();
     const e = JSON.parse(m.data) as HostEvent;
@@ -124,8 +136,14 @@ export function createHost(NodeFrame: HostApi["NodeFrame"], McpApp: HostApi["Mcp
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...target, message, origin }),
       }).then((r) => r.text),
-    history: (t: AgentRef, opts?: { after?: string }) =>
-      subscribed().then(() => api<{ messages: UIMessage[] }>(`/_pagent/history?${qs({ node: t.node, agent: t.agent, ...(opts?.after ? { after: opts.after } : {}) })}`).then((r) => r.messages)),
+    history: (t: AgentRef, opts: { after?: string; before?: string; last: number }) =>
+      subscribed().then(() =>
+        api<{ messages: UIMessage[]; earlier?: number }>(
+          `/_pagent/history?${qs({ node: t.node, agent: t.agent, last: String(opts.last), ...(opts.after ? { after: opts.after } : {}), ...(opts.before ? { before: opts.before } : {}) })}`,
+        ).then((r) => ({ messages: r.messages, earlier: r.earlier ?? 0 })),
+      ),
+    toolCall: (t: AgentRef, id: string) =>
+      fetch(`/_pagent/tool-call?${qs({ node: t.node, agent: t.agent, id })}`).then((r) => (r.ok ? (r.json() as Promise<{ input?: unknown; output?: unknown; errorText?: string }>) : null)),
     // AI SDK's own HTTP transport: POST starts a turn and streams it; GET re-attaches to a turn in progress.
     chatTransport: (t, { origin, clientId }) =>
       new DefaultChatTransport<UIMessage>({

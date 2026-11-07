@@ -152,6 +152,8 @@ const en = {
   "console.empty": "No turns yet.",
   "close": "Close",
   "loading": "Loading…",
+  "chat.earlier.one": "Earlier: {n} message",
+  "chat.earlier.other": "Earlier: {n} messages",
 
   // The conversation
   "chat.thinking": "Thinking",
@@ -168,6 +170,13 @@ const en = {
   "plan.updated": "step {id}: {what}",
   "plan.removed": "removed",
   "chat.from": "from {who}",
+  // The person's answer to an agent's question or form, as they read it (turns.ts answerShown; the agent is told it in
+  // its own words, core: commands/agents.ts told()).
+  "answer.question": "Answered \"{q}\": {a}",
+  "answer.form": "Filled in the form \"{q}\":\n{a}",
+  "answer.secret": "Filled in the Secure Form \"{q}\": {a}. The value never passed through the agent.",
+  "answer.cancelled": "Cancelled the form \"{q}\".",
+  "answer.cancelledSecret": "Cancelled the Secure Form \"{q}\"; nothing was saved.",
   "chat.image": "an image",
   "chat.fullSize": "Open full size",
   "chat.file": "a file",
@@ -394,6 +403,8 @@ const zhCN: Words = {
   "console.empty": "还没有对话。",
   "close": "关闭",
   "loading": "正在加载…",
+  "chat.earlier.one": "更早的 {n} 条消息",
+  "chat.earlier.other": "更早的 {n} 条消息",
 
   "chat.thinking": "思考过程",
   "plan.title": "计划",
@@ -409,6 +420,11 @@ const zhCN: Words = {
   "plan.updated": "第 {id} 步：{what}",
   "plan.removed": "已删除",
   "chat.from": "来自 {who}",
+  "answer.question": "回答了问题「{q}」：{a}",
+  "answer.form": "填了表单「{q}」：\n{a}",
+  "answer.secret": "填了安全表单「{q}」：{a}。填的值没有经过 agent。",
+  "answer.cancelled": "取消了表单「{q}」。",
+  "answer.cancelledSecret": "取消了安全表单「{q}」，什么都没存。",
   "chat.image": "一张图片",
   "chat.fullSize": "查看原图",
   "chat.file": "一个文件",

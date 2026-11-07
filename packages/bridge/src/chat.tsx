@@ -1,6 +1,6 @@
 // Conversations with an agent, on AI SDK's useChat. The native transcript is the history; live turns stream
 // as UI message chunks; turns started elsewhere (a bubbled ask, another tab) are attached with resumeStream.
-import { createContext, Fragment, memo, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { Chat as ChatState, useChat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -10,7 +10,7 @@ import { commandOf, formAskOf, formStates, type FormAsk, type FormState } from "
 import { useHost, useResolvedAgent, useScope, type AgentHandle, type HostApi } from "./index.tsx";
 import { CardsShownContext, NodeCard, splitCards, type CardsShown } from "./cards.tsx";
 import { mergeHistory, shownId, shownIds } from "./history.ts";
-import { chatterLabels, rowsOf, type Row } from "./turns.ts";
+import { answerShown, chatterLabels, rowsOf, type Row } from "./turns.ts";
 import { t, tn, toolWord, useLanguage } from "./i18n.ts";
 import { imageKind, linkKind } from "./links.ts";
 import { planOf, proposalOf, stepsAfter, stepsChangeOf, type Plan, type PlanStep, type Proposal } from "./plan.ts";
@@ -29,6 +29,10 @@ type ChatStore = {
   chat: ChatState<UIMessage>;
   /** The history has arrived (reading it can take a moment). */
   loaded: boolean;
+  /** How many messages come before those shown (the history is shown from its latest turns on: 0, all of it). */
+  earlier: number;
+  /** Show the turns before those shown (earlier ones, the same number again). */
+  loadEarlier: () => Promise<void>;
   subscribe: (cb: () => void) => () => void;
   /** A component that shows it mounted: the store loads and follows the agent while there is one. */
   use: () => () => void;
@@ -37,6 +41,9 @@ type ChatStore = {
 };
 
 const chatStores = new WeakMap<HostApi, Map<string, ChatStore>>();
+
+/** How many turns of the history a conversation shows at first, and loads again each time the reader asks for earlier ones. */
+const TURNS = 80;
 
 function chatStore(host: HostApi, agent: AgentRef, origin: string): ChatStore {
   const key = `${agent.node}#${agent.agent}@${origin}`;
@@ -53,10 +60,15 @@ function chatStore(host: HostApi, agent: AgentRef, origin: string): ChatStore {
   // A load put off while a reply streamed (whole or not; null: none), and how to make it.
   let later: boolean | null = null;
   let sync: (whole: boolean) => void = () => {};
+  let earlierLoad: () => Promise<void> = async () => {};
+  const changed = () => {
+    for (const l of listeners) l();
+  };
 
   const start = () => {
     let alive = true;
     let last: string | undefined; // the newest message the history gave (its history id): a later load starts there
+    let oldest: string | undefined; // the first one shown (its history id): a whole load starts there
     let timer: ReturnType<typeof setTimeout> | undefined;
     let queue = Promise.resolve();
     const ids = shownIds();
@@ -65,12 +77,14 @@ function chatStore(host: HostApi, agent: AgentRef, origin: string): ChatStore {
       if (streaming()) return putOff(whole);
       // A sub-agent still running in an earlier reply (in the background) changes that reply: all of it is loaded.
       const shown = chat.messages;
-      const earlier = shown.some((m) => m.parts.some((p: any) => p.type === "data-subagent" && p.data?.status === "running"));
-      const from = !whole && !earlier && last && shown.some((m) => m.id === shownId(ids, last!)) ? last : undefined;
-      const got = await host.history(agent, from ? { after: from } : undefined);
+      const background = shown.some((m) => m.parts.some((p: any) => p.type === "data-subagent" && p.data?.status === "running"));
+      const from = !whole && !background && last && shown.some((m) => m.id === shownId(ids, last!)) ? last : undefined;
+      // All of it: from the first shown on (the earlier turns the reader loaded stay), or the latest turns.
+      const after = from ?? oldest;
+      const { messages: got, earlier } = await host.history(agent, { last: TURNS, ...(after ? { after } : {}) });
       if (!alive) return;
       if (streaming()) return putOff(whole); // a reply started meanwhile
-      const partial = !!from && got[0]?.id === from; // else the host gave all of it (that message is gone)
+      const partial = !!from && got[0]?.id === from; // else the host gave the latest turns (that message is gone)
       const prev = chat.messages;
       const next = mergeHistory(prev, got, partial ? from : undefined, ids);
       debug("merge", {
@@ -81,13 +95,30 @@ function chatStore(host: HostApi, agent: AgentRef, origin: string): ChatStore {
       });
       chat.messages = next;
       last = got.length ? got[got.length - 1].id : partial ? from : undefined;
-      if (!store.loaded) {
+      if (!partial) oldest = got[0]?.id;
+      if (!store.loaded || (!partial && store.earlier !== earlier)) {
         store.loaded = true;
-        for (const l of listeners) l();
+        if (!partial) store.earlier = earlier;
+        changed();
       }
       if (whole) await chat.resumeStream(); // attaches if the agent is mid-turn, no-op otherwise
     };
     sync = (whole: boolean) => void (queue = queue.then(() => load(whole)).catch(() => {}));
+    // The turns before the first shown, put before it (a reply streaming at the end is not touched).
+    earlierLoad = () =>
+      (queue = queue
+        .then(async () => {
+          if (!oldest || !store.earlier) return;
+          const { messages: got, earlier } = await host.history(agent, { last: TURNS, before: oldest });
+          if (!alive || !got.length) return;
+          const known = new Set(chat.messages.map((m) => m.id));
+          const shown = got.map((m) => (shownId(ids, m.id) === m.id ? m : { ...m, id: shownId(ids, m.id) })).filter((m) => !known.has(m.id));
+          chat.messages = [...shown, ...chat.messages];
+          oldest = got[0].id;
+          store.earlier = earlier;
+          changed();
+        })
+        .catch(() => {}));
     sync(true);
     const off = host.onAgent(agent, (e) => {
       if (e.type === "resync") return sync(true);
@@ -109,6 +140,8 @@ function chatStore(host: HostApi, agent: AgentRef, origin: string): ChatStore {
   const store: ChatStore = {
     chat,
     loaded: false,
+    earlier: 0,
+    loadEarlier: () => earlierLoad(),
     subscribe: (cb) => (listeners.add(cb), () => void listeners.delete(cb)),
     use: () => {
       users++;
@@ -150,10 +183,11 @@ export function useAgentChat(explicit?: AgentHandle | string) {
   const store = chatStore(host, agent, scope.path);
   const chat = useChat<UIMessage>({ chat: store.chat });
   const loaded = useSyncExternalStore(store.subscribe, () => store.loaded, () => store.loaded);
+  const earlier = useSyncExternalStore(store.subscribe, () => store.earlier, () => store.earlier);
   useEffect(() => store.use(), [store]);
   // A reply finished streaming: the load put off meanwhile.
   useEffect(() => store.settled(), [store, chat.status]);
-  return { ...chat, loaded };
+  return { ...chat, loaded, earlier, loadEarlier: store.loadEarlier };
 }
 
 /**
@@ -220,22 +254,54 @@ function ToolCall({ part, detailed }: { part: ToolPart; detailed?: boolean }) {
       </span>
     );
   }
-  const output = part.state === "output-available" ? part.output : part.state === "output-error" ? part.errorText : undefined;
   // A call its runner says changes the list of steps: the whole list, ticked off; one step added or changed, in a line
   // (the list it is part of is the plan's, usePlan); never its JSON.
   const change = stepsChangeOf(part);
   const list = change && "set" in change ? stepsAfter([part])!.steps : null;
   return (
-    <details className="pagent-toolcard" data-state={toolState(part)}>
-      <summary>
-        <span className="pagent-tool" data-state={toolState(part)}>{toolWord(part)}</span>
-        <span className="pagent-toolcard-brief">
-          {list ? t("plan.progress", { done: list.filter((s) => s.status === "done").length, n: list.length }) : change ? stepsLine(change) : brief(part.input)}
-        </span>
-      </summary>
-      {list ? <StepList steps={list} /> : !change && saysMore(part.input) && <pre data-label={t("chat.input")}>{show(part.input)}</pre>}
-      {output !== undefined && !change && <pre className="pagent-toolcard-out" data-label={t("chat.output")}>{show(output).slice(0, 4000)}</pre>}
-    </details>
+    <Fold
+      className="pagent-toolcard"
+      data-state={toolState(part)}
+      summary={
+        <summary>
+          <span className="pagent-tool" data-state={toolState(part)}>{toolWord(part)}</span>
+          <span className="pagent-toolcard-brief">
+            {list ? t("plan.progress", { done: list.filter((s) => s.status === "done").length, n: list.length }) : change ? stepsLine(change) : brief(part.input)}
+          </span>
+        </summary>
+      }
+    >
+      {list ? <StepList steps={list} /> : !change && <CallBody part={part} />}
+    </Fold>
+  );
+}
+
+/** Where a view's history cut a piece of a call to a few lines (core: viewMessage). */
+const CUT = /\n… \(\d+ more characters\)$/;
+const isCut = (v: unknown): boolean => (typeof v === "string" ? CUT.test(v) : Array.isArray(v) ? v.some(isCut) : !!v && typeof v === "object" && Object.values(v).some(isCut));
+
+/** The conversation's agent, for a card that fetches its call whole (HostApi.toolCall). */
+const ConversationAgent = createContext<AgentRef | null>(null);
+
+/** An opened card's input and output: as the history has them, then (cut there) the call as it is, fetched. */
+function CallBody({ part }: { part: ToolPart }) {
+  const agent = useContext(ConversationAgent);
+  const host = useHost();
+  const shown = part.state === "output-available" ? part.output : part.state === "output-error" ? part.errorText : undefined;
+  const [whole, setWhole] = useState<{ input?: unknown; output?: unknown; errorText?: string } | null>(null);
+  useEffect(() => {
+    if (!agent || !(isCut(part.input) || isCut(shown))) return;
+    let on = true;
+    void host.toolCall(agent, part.toolCallId).then((w) => on && w && setWhole(w), () => {});
+    return () => void (on = false);
+  }, [part.toolCallId]);
+  const input = whole ? whole.input : part.input;
+  const output = whole ? (part.state === "output-error" ? whole.errorText : whole.output) ?? shown : shown;
+  return (
+    <>
+      {saysMore(input) && <pre data-label={t("chat.input")}>{show(input)}</pre>}
+      {output !== undefined && <pre className="pagent-toolcard-out" data-label={t("chat.output")}>{show(output).slice(0, 4000)}</pre>}
+    </>
   );
 }
 
@@ -369,10 +435,9 @@ export function Part({ part, detailed }: { part: UIMessage["parts"][number]; det
       return <Text text={part.text} />;
     case "reasoning":
       return part.text.trim() ? (
-        <details className="pagent-reasoning">
-          <summary>{t("chat.thinking")}</summary>
+        <Fold className="pagent-reasoning" summary={<summary>{t("chat.thinking")}</summary>}>
           <div>{part.text}</div>
-        </details>
+        </Fold>
       ) : null;
     case "dynamic-tool":
       return <ToolCall part={part} detailed={detailed} />;
@@ -402,7 +467,9 @@ export const MessageView = memo(function MessageView({ message, detailed }: { me
   useLanguage(); // memo: it renders again in another language, not only when the message changed
   const caller = (message.metadata as { caller?: Caller } | undefined)?.caller;
   const subs = subagentsOf(message.parts);
-  const parts = subs.size ? message.parts.filter((p) => !isSubagentData(p)) : message.parts;
+  const own = subs.size ? message.parts.filter((p) => !isSubagentData(p)) : message.parts;
+  // The person's answer, passed on by the engine: in the page's language (turns.ts answerShown).
+  const parts = message.role === "user" && caller?.kind === "pagent" ? own.map((p) => (p.type === "text" ? { ...p, text: answerShown(p.text) } : p)) : own;
   // Compact: the calls are a row of chips, but a form keeps its card, in its place.
   const tools = parts.filter((p) => p.type === "dynamic-tool" && !standsAlone(p));
   return (
@@ -452,7 +519,12 @@ export function Turns({ messages, me, detailed, chatter = "fold", cards = "open"
     ) : (
       <Chatter key={r.id} row={r} me={me} detailed={detailed} />
     );
-  if (!footer) return <CardsShownContext.Provider value={cards}>{rows.map(row)}</CardsShownContext.Provider>;
+  if (!footer)
+    return (
+      <ConversationAgent.Provider value={me}>
+        <CardsShownContext.Provider value={cards}>{rows.map(row)}</CardsShownContext.Provider>
+      </ConversationAgent.Provider>
+    );
   // Rows by turn: one starts at each message to the agent (or folded exchange); its replies follow.
   const turns: { rows: Row[]; messages: UIMessage[] }[] = [];
   for (const r of rows) {
@@ -469,16 +541,18 @@ export function Turns({ messages, me, detailed, chatter = "fold", cards = "open"
     running: !!busy && i === turns.length - 1,
   }));
   return (
-    <CardsShownContext.Provider value={cards}>
-      {turns.map((t, i) => {
-        return (
-          <Fragment key={all[i].id}>
-            {t.rows.map(row)}
-            <div className="pagent-turn-footer">{footer(all[i], all)}</div>
-          </Fragment>
-        );
-      })}
-    </CardsShownContext.Provider>
+    <ConversationAgent.Provider value={me}>
+      <CardsShownContext.Provider value={cards}>
+        {turns.map((t, i) => {
+          return (
+            <Fragment key={all[i].id}>
+              {t.rows.map(row)}
+              <div className="pagent-turn-footer">{footer(all[i], all)}</div>
+            </Fragment>
+          );
+        })}
+      </CardsShownContext.Provider>
+    </ConversationAgent.Provider>
   );
 }
 
@@ -506,16 +580,20 @@ function Compaction({ message }: { message: UIMessage }) {
   const summary = message.parts.map((p) => (p.type === "text" ? p.text : "")).join("").trim();
   if (!summary) return <div className="pagent-compaction"><span className="pagent-compaction-line">{t("chat.compacted")}</span></div>;
   return (
-    <details className="pagent-compaction">
-      <summary className="pagent-compaction-line">
-        {t("chat.compacted")}
-        <span className="pagent-compaction-more">{t("chat.summary")}</span>
-        <Chevron />
-      </summary>
+    <Fold
+      className="pagent-compaction"
+      summary={
+        <summary className="pagent-compaction-line">
+          {t("chat.compacted")}
+          <span className="pagent-compaction-more">{t("chat.summary")}</span>
+          <Chevron />
+        </summary>
+      }
+    >
       <div className="pagent-text pagent-compaction-body">
         <ReactMarkdown {...markdown}>{summary}</ReactMarkdown>
       </div>
-    </details>
+    </Fold>
   );
 }
 
@@ -680,21 +758,25 @@ function SubagentRow({ sub }: { sub: Sub }) {
   // What it reported, as one plain line (its markdown's marks left out).
   const summary = !running && info.summary ? info.summary.replace(/`|\*\*|^#+\s+|^\s*[-*]\s+/gm, "").replace(/\s+/g, " ").trim() : "";
   return (
-    <details className="pagent-subagent" data-state={subState(info.status)}>
-      <summary>
-        <span className="pagent-subagent-line">
-          <span className="pagent-subagent-type">{info.type}</span>
-          <span className="pagent-subagent-desc" title={info.description}>{info.description}</span>
-          {meta.length > 0 && <span className="pagent-subagent-meta">{meta.join(" · ")}</span>}
-        </span>
-        {summary && <span className="pagent-subagent-result">{summary}</span>}
-      </summary>
+    <Fold
+      className="pagent-subagent"
+      data-state={subState(info.status)}
+      summary={
+        <summary>
+          <span className="pagent-subagent-line">
+            <span className="pagent-subagent-type">{info.type}</span>
+            <span className="pagent-subagent-desc" title={info.description}>{info.description}</span>
+            {meta.length > 0 && <span className="pagent-subagent-meta">{meta.join(" · ")}</span>}
+          </span>
+          {summary && <span className="pagent-subagent-result">{summary}</span>}
+        </summary>
+      }
+    >
       <div className="pagent-subagent-body">
         {info.prompt && (
-          <details className="pagent-reasoning">
-            <summary>{t("subagent.prompt")}</summary>
+          <Fold className="pagent-reasoning" summary={<summary>{t("subagent.prompt")}</summary>}>
             <div>{info.prompt}</div>
-          </details>
+          </Fold>
         )}
         {steps.map((p, i) => {
           const nested = p.type === "dynamic-tool" ? subs.get(p.toolCallId) : undefined;
@@ -702,7 +784,7 @@ function SubagentRow({ sub }: { sub: Sub }) {
         })}
         {!steps.length && <div className="pagent-muted">{t(running ? "subagent.startingNow" : "subagent.nothing")}</div>}
       </div>
-    </details>
+    </Fold>
   );
 }
 
@@ -716,21 +798,96 @@ function Steps({ parts }: { parts: AnyPart[] }) {
   const running = tools.find((t) => toolState(t) === "running");
   const failed = tools.filter((t) => toolState(t) === "error").length;
   return (
-    <details className="pagent-steps" data-state={running ? "running" : failed ? "error" : "done"}>
-      <summary>
-        {running ? (
-          <>
-            <span className="pagent-tool" data-state="running">{toolWord(running)}</span>
-            <span className="pagent-toolcard-brief">{brief(running.input)}</span>
-          </>
-        ) : (
-          <span className="pagent-muted">
-            {tn("chat.steps.one", "chat.steps.other", tools.length)}
-            {failed ? <span className="pagent-fail"> · {t("chat.failed", { n: failed })}</span> : null}
-          </span>
-        )}
-      </summary>
+    <Fold
+      className="pagent-steps"
+      data-state={running ? "running" : failed ? "error" : "done"}
+      summary={
+        <summary>
+          {running ? (
+            <>
+              <span className="pagent-tool" data-state="running">{toolWord(running)}</span>
+              <span className="pagent-toolcard-brief">{brief(running.input)}</span>
+            </>
+          ) : (
+            <span className="pagent-muted">
+              {tn("chat.steps.one", "chat.steps.other", tools.length)}
+              {failed ? <span className="pagent-fail"> · {t("chat.failed", { n: failed })}</span> : null}
+            </span>
+          )}
+        </summary>
+      }
+    >
       {parts.map((p, i) => <Part key={i} part={p} detailed />)}
+    </Fold>
+  );
+}
+
+/** The element that scrolls `el` (the conversation's log). */
+function scrollerOf(el: HTMLElement | null): HTMLElement | null {
+  for (let e = el?.parentElement; e; e = e.parentElement) if (/(auto|scroll)/.test(getComputedStyle(e).overflowY)) return e;
+  return null;
+}
+
+/**
+ * Above a conversation shown from its latest turns: the earlier ones, loaded when the reader scrolls up to here (or
+ * clicks), put above what they were reading without moving it.
+ */
+export function Earlier({ count, load }: { count: number; load: () => Promise<void> }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const loading = useRef(false);
+  const kept = useRef<{ box: HTMLElement; fromEnd: number } | null>(null);
+  const [, setBusy] = useState(false);
+  const more = () => {
+    if (loading.current) return;
+    loading.current = true;
+    setBusy(true);
+    const box = scrollerOf(ref.current);
+    kept.current = box ? { box, fromEnd: box.scrollHeight - box.scrollTop } : null;
+    void load().finally(() => ((loading.current = false), setBusy(false)));
+  };
+  // Put in (rendered with the new count): where the reader was, the same distance from the end.
+  useLayoutEffect(() => {
+    const k = kept.current;
+    if (k) k.box.scrollTop = k.box.scrollHeight - k.fromEnd;
+    kept.current = null;
+  }, [count]);
+  // Scrolled up to it by the reader (not while the conversation first lands at its end).
+  useEffect(() => {
+    const el = ref.current;
+    const box = scrollerOf(el);
+    if (!el || !box || !count) return;
+    let moved = false;
+    const by = () => void (moved = true);
+    const io = new IntersectionObserver(([e]) => e.isIntersecting && moved && more(), { root: box, rootMargin: "300px 0px 0px 0px" });
+    io.observe(el);
+    box.addEventListener("wheel", by, { passive: true });
+    box.addEventListener("touchmove", by, { passive: true });
+    box.addEventListener("keydown", by);
+    return () => {
+      io.disconnect();
+      box.removeEventListener("wheel", by);
+      box.removeEventListener("touchmove", by);
+      box.removeEventListener("keydown", by);
+    };
+  }, [count]);
+  return (
+    <div ref={ref} className="pagent-earlier">
+      {count > 0 && (
+        <button className="pagent-ghost" disabled={loading.current} onClick={more}>
+          {loading.current ? t("loading") : tn("chat.earlier.one", "chat.earlier.other", count)}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A <details> whose content is rendered once it is first opened (a long conversation has thousands of them, shut). */
+function Fold({ summary, children, ...props }: { summary: ReactNode; children: ReactNode; className?: string; "data-state"?: string }) {
+  const [opened, setOpened] = useState(false);
+  return (
+    <details {...props} onToggle={(e) => e.currentTarget.open && setOpened(true)}>
+      {summary}
+      {opened && children}
     </details>
   );
 }
@@ -743,14 +900,15 @@ function Steps({ parts }: { parts: AnyPart[] }) {
 export function Chat({ agent: explicit, placeholder, style, chatter, cards }: { agent?: AgentHandle | string; placeholder?: string; style?: CSSProperties; chatter?: "fold" | "show"; cards?: CardsShown }) {
   useLanguage();
   const agent = useResolvedAgent(explicit);
-  const { messages, sendMessage, status, loaded } = useAgentChat(agent);
+  const { messages, sendMessage, status, loaded, earlier, loadEarlier } = useAgentChat(agent);
   const [draft, setDraft] = useDraft(draftKey(agent));
   const endRef = useRef<HTMLDivElement>(null);
   const busy = status === "submitted" || status === "streaming";
 
+  // To the end as the last message comes or grows (not as earlier ones are put before it).
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [messages]);
+  }, [messages[messages.length - 1]]);
 
   const send = () => {
     const text = draft.trim();
@@ -766,6 +924,7 @@ export function Chat({ agent: explicit, placeholder, style, chatter, cards }: { 
       </div>
       <div className="pagent-chat-log">
         {loaded && messages.length === 0 && <div className="pagent-muted">{t("chat.empty")}</div>}
+        <Earlier count={earlier} load={loadEarlier} />
         <FormStatesOf agent={agent} messages={messages}>
           <Turns messages={messages} me={agent} chatter={chatter} cards={cards} />
         </FormStatesOf>

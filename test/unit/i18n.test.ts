@@ -9,6 +9,8 @@ import { afterEach, test } from "node:test";
 import { quietNote } from "../../packages/bridge/src/agent-ui.tsx";
 import { callerLabel } from "../../packages/bridge/src/contract.ts";
 import { labelOf, langOf, sayIn, setAppLanguage, setLanguage, t, toolWord, WORDS } from "../../packages/bridge/src/i18n.ts";
+import { answerShown } from "../../packages/bridge/src/turns.ts";
+import { told } from "../../packages/core/src/commands/agents.ts";
 import { subagentDoing, toolDoing, type Activity } from "../../packages/core/src/agents/status.ts";
 import { repo } from "../lib/app.ts";
 import { withMeta } from "../lib/tools.ts";
@@ -140,4 +142,32 @@ test("every language says every key, with the same values in it", () => {
       assert.equal(names(w), names(english), `${lang}: ${key}`);
     }
   }
+});
+
+test("the person's answer to an agent's question or form reads in the page's language, from what the engine tells the agent", async () => {
+  const form = { secret: false } as never;
+  const secret = { secret: true } as never;
+  const told_ = [
+    told({ question: "Which color?" }, "Blue"),
+    told({ question: "Ship to", form }, "name: Ada\ncity: Paris"),
+    told({ question: "Weather API key", form: secret }, "saved to the app's .env as WEATHER_KEY."),
+    told({ question: "Ship to", form }, ""),
+    told({ question: "Weather API key", form: secret }, ""),
+  ];
+  assert.deepEqual(told_.map(answerShown), [
+    'Answered "Which color?": Blue',
+    'Filled in the form "Ship to":\nname: Ada\ncity: Paris',
+    `Filled in the Secure Form "Weather API key": saved to the app's .env as WEATHER_KEY. The value never passed through the agent.`,
+    'Cancelled the form "Ship to".',
+    'Cancelled the Secure Form "Weather API key"; nothing was saved.',
+  ]);
+  await setLanguage("zh");
+  assert.deepEqual(told_.map(answerShown), [
+    "回答了问题「Which color?」：Blue",
+    "填了表单「Ship to」：\nname: Ada\ncity: Paris",
+    "填了安全表单「Weather API key」：saved to the app's .env as WEATHER_KEY。填的值没有经过 agent。",
+    "取消了表单「Ship to」。",
+    "取消了安全表单「Weather API key」，什么都没存。",
+  ]);
+  assert.equal(answerShown("(from pagent) pagent run /x → 0"), "(from pagent) pagent run /x → 0", "anything else: as it is");
 });

@@ -77,9 +77,10 @@ const stillListed = (probes: Stamps) => probes.every(([d, l]) => moduleListing(d
 /**
  * sources: the folders the node's code is read from, its own first (an instance's own files shadow its sources', file by
  * file: tree.ts); params, code: an instance of a dynamic page's (NodeInfo); of: the node a fork renders; refused: its
- * agents function refused its params, and why (agents-fn.ts).
+ * agents function refused its params, and why (agents-fn.ts); fill: what its layout and its page each say of metadata.fill
+ * (a layout's holds for the pages under it, a page's for itself only: /_pagent/route).
  */
-type Declarations = { sources: string[]; files: NodeFile[]; manifest: Extracted; params?: Params; code?: string; of?: string; refused?: string };
+type Declarations = { sources: string[]; files: NodeFile[]; manifest: Extracted; fill: Partial<Record<NodeFile, boolean>>; params?: Params; code?: string; of?: string; refused?: string };
 
 export class Nodes {
   readonly root: string;
@@ -149,6 +150,7 @@ export class Nodes {
     const named = (file: string) => "/" + relative(this.root, file);
     const files: NodeFile[] = [];
     const parts: Extracted[] = [];
+    const fill: Partial<Record<NodeFile, boolean>> = {};
     let refused: string | undefined;
     for (const f of ["layout", "page"] as NodeFile[]) {
       // Its own copy, over the ones it shadows: it keeps each declaration it does not make (inherit).
@@ -163,6 +165,7 @@ export class Nodes {
         part.errors.push(...(r.errors.length ? r.errors : r.refused ? [r.refused] : []));
         refused ??= r.refused;
       }
+      if (part.fill !== undefined) fill[f] = part.fill;
       parts.push(part);
     }
     // "use server" files directly in the node's folder (an instance's own, else its sources' by name): each exported
@@ -182,6 +185,7 @@ export class Nodes {
       sources,
       files,
       manifest: mergeManifest(parts),
+      fill,
       ...(found.code !== path ? { params: found.params, code: found.code } : {}),
       ...(found.of ? { of: found.of } : {}),
       ...(refused ? { refused } : {}),

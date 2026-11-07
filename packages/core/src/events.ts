@@ -29,9 +29,14 @@ export type Say = { key: string; values?: Record<string, string | number | Say> 
 const clients = new Map<ServerResponse, string | null>(); // stream → the browser's client id
 
 /** A browser's event stream. The ping is a real event so the browser can tell a dead stream (e.g. a proxy holding it after a restart) and reconnect. */
-export function sse(req: IncomingMessage, res: ServerResponse, clientId: string | null) {
+/**
+ * A page's stream of the app's events. shell: the build of the shell the server serves now, said first, so a page still
+ * running an older one (opened before pagent was updated and the server restarted) loads the new one (host.ts).
+ */
+export function sse(req: IncomingMessage, res: ServerResponse, clientId: string | null, shell?: string | null) {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
   res.write("event: ping\ndata: {}\n\n");
+  if (shell) res.write(`event: shell\ndata: ${JSON.stringify({ id: shell })}\n\n`);
   clients.set(res, clientId);
   const ping = setInterval(() => res.write("event: ping\ndata: {}\n\n"), 15_000);
   req.on("close", () => {

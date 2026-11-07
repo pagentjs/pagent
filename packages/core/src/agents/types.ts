@@ -56,7 +56,7 @@ export type Run = {
   /** The harness has the message (a headless turn in the daemon, pasted into the TUI, taken by the thread). */
   taken?: boolean;
   /** The message's letter in the inbox (inbox.ts): what to do with it once the harness took the message, or not. */
-  letter?: { taken: () => void; untaken: () => void };
+  letter?: { taken: () => void; untaken: (why?: string) => void };
   /** Its message reached where it goes, or why not: set by a driver that sends it elsewhere (a remote agent's), for whoever tells it. */
   sent?: Promise<void>;
   /** Someone stopped its turn (`pagent stop`, the Stop button): how it ends is no error. */

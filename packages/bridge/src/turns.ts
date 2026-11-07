@@ -11,6 +11,7 @@
 // for every harness.
 import type { UIMessage } from "ai";
 import type { Caller } from "./contract.ts";
+import { t } from "./i18n.ts";
 import { keyOfFolder } from "./instance.ts";
 
 /** Who a message in the session is from (a reply: the agent). */
@@ -18,7 +19,7 @@ export type From =
   | { kind: "person" } // typed in a conversation, or in its terminal
   | { kind: "page"; path: string } // a page's button or event, "(from /path)"
   | { kind: "agent"; node: string; agent: string } // another agent, "(from /node#agent)"
-  | { kind: "outside"; who: string } // someone outside the app, through a route (who: its host)
+  | { kind: "outside"; who: string } // someone outside the app: through a route (who: its host), or a session on this computer (local:<name>)
   | { kind: "subagent" } // its harness: a sub-agent in the background finished
   | { kind: "pagent" } // the engine: a command's outcome, "(from pagent)"
   | { kind: "answer" } // the person's answer to its question or form, which the engine passes on "(from pagent)"
@@ -32,6 +33,22 @@ const textOf = (m: UIMessage) => m.parts.map((p) => (p.type === "text" ? p.text 
 
 /** How the engine tells an agent what the person answered (core: commands/agents.ts, told()). */
 const ANSWER = /^The user (answered your question|filled in the|cancelled the) /;
+
+/**
+ * The person's answer (ANSWER) as they read it, in the page's language: the engine tells the agent in English, and the
+ * person sees it as theirs. Anything else: as it is.
+ */
+export function answerShown(text: string): string {
+  let m = /^The user answered your question "([\s\S]*?)": ([\s\S]*)$/.exec(text);
+  if (m) return t("answer.question", { q: m[1], a: m[2] });
+  m = /^The user filled in the Secure Form "([\s\S]*?)": ([\s\S]*)\. The value never passed through you\.$/.exec(text);
+  if (m) return t("answer.secret", { q: m[1], a: m[2] });
+  m = /^The user filled in the form "([\s\S]*?)":\n([\s\S]*)$/.exec(text);
+  if (m) return t("answer.form", { q: m[1], a: m[2] });
+  m = /^The user cancelled the (form|Secure Form) "([\s\S]*?)"(; nothing was saved)?\.$/.exec(text);
+  if (m) return t(m[3] ? "answer.cancelledSecret" : "answer.cancelled", { q: m[2] });
+  return text;
+}
 
 export function fromOf(m: UIMessage): From {
   if (m.role !== "user") return { kind: "reply" };
@@ -48,6 +65,9 @@ export function fromOf(m: UIMessage): From {
     case "page": return { kind: "page", path: caller.path };
     case "trigger": return { kind: "trigger", node: caller.node, name: caller.name };
     case "external": return { kind: "outside", who: hostOf(caller.from) ?? caller.ip };
+    case "local": return { kind: "outside", who: `local:${caller.name}` };
+    // A sender this shell does not know (a newer engine's): shown as from outside, by its kind, not a crash.
+    default: return { kind: "outside", who: String((caller as { kind: unknown }).kind) };
   }
 }
 

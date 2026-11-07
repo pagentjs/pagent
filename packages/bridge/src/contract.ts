@@ -302,9 +302,10 @@ export type ChatOrigin = { origin: string; clientId: string };
 export type Caller = (
   | { kind: "user" }
   | { kind: "page"; path: string }
-  | { kind: "agent"; node: string; agent: string }
+  | { kind: "agent"; node: string; agent: string; noReply?: true } // noReply: the sender asked for none (pagent tell --no-reply)
   | { kind: "trigger"; node: string; name: string }
   | { kind: "pagent" }
+  | { kind: "local"; name: string; noReply?: true } // a session on this computer outside the app (pagent tell --as <name>)
   | { kind: "external"; ip: string; from?: string; key?: { name: string; scope: string }; inReplyTo?: string; remote?: string }
 ) & { via?: string[] };
 
@@ -316,18 +317,26 @@ export function callerLabel(c: Caller): string {
     case "agent": return `${c.node}#${c.agent}`;
     case "trigger": return `trigger:${c.node}#${c.name}`;
     case "pagent": return "pagent";
+    case "local": return `local:${c.name}`;
     case "external": {
       const who = c.from ?? c.ip;
       return c.key ? `${who} (key ${c.key.name})` : c.inReplyTo ? who : t("caller.stranger", { who });
     }
+    default: return String((c as { kind: unknown }).kind); // a newer engine's sender
   }
 }
 
 /** What the host (the shell) provides. */
 export type HostApi = {
   ask(target: AgentRef, message: string, opts: { origin: string }): Promise<string>;
-  /** after: from that message on (it included), if the host still has it; otherwise the whole history. */
-  history(target: AgentRef, opts?: { after?: string }): Promise<UIMessage[]>;
+  /**
+   * A view's part of the history: from `after` on (it included), if the host still has it; else the last `last` turns
+   * before `before` (earlier ones), or before the end. earlier: how many messages come before the part (0: none). Long
+   * tool input and output are cut to a few lines ("\n… (N more characters)"): toolCall has a call whole.
+   */
+  history(target: AgentRef, opts: { after?: string; before?: string; last: number }): Promise<{ messages: UIMessage[]; earlier: number }>;
+  /** One tool call of the agent's conversation (or of a sub-agent's) as it is, by its id (null: no such call). */
+  toolCall(target: AgentRef, id: string): Promise<{ input?: unknown; output?: unknown; errorText?: string } | null>;
   chatTransport(target: AgentRef, opts: ChatOrigin): ChatTransport<UIMessage>;
   /**
    * The agent's session as a timeline (long records cut): all of it, or what changed after the `at` of a page the view

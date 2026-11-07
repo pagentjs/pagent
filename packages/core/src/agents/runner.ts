@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
+import { nodeBin } from "../program.ts";
 import { engine } from "../engine.ts";
 import type { AgentDecl } from "../extract.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
@@ -47,11 +48,12 @@ export function lineReader(onLine: (e: any) => void) {
 export async function invoke(script: string, input: Record<string, unknown>, cwd: string, onLine: (e: any) => void, onChild?: (c: ChildProcess) => void, own?: NodeJS.ProcessEnv): Promise<number> {
   const env = own ?? (await harnessEnv());
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [script], { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
+    const child = spawn(nodeBin(), [script], { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
     onChild?.(child);
     child.stdout.setEncoding("utf8").on("data", lineReader(onLine));
     child.on("error", reject);
     child.on("close", (code) => resolve(code ?? 1));
+    child.stdin.on("error", () => {}); // a runner that died before reading it (EPIPE) ends in "close"; unheard, it took the server down
     child.stdin.end(JSON.stringify(input));
   });
 }

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 type UIMessage = Parameters<typeof mergeHistory>[0][number];
 import { mergeHistory, shownIds } from "../../packages/bridge/src/history.ts";
-import { callerOf, untilRun, type Run } from "../../packages/core/src/agents.ts";
+import { callerOf, toolCallOf, untilRun, viewMessage, viewPart, type Run } from "../../packages/core/src/agents.ts";
 
 const user = (id: string, text: string, origin?: string): UIMessage => ({ id, role: "user", parts: [{ type: "text", text }], ...(origin ? { metadata: { origin } } : {}) });
 const reply = (id: string, ...texts: string[]): UIMessage => ({ id, role: "assistant", parts: texts.map((text) => ({ type: "text" as const, text, state: "done" as const })) });
@@ -64,4 +64,40 @@ test("the caller's line, read by core from any runner's transcript: the message,
   assert.equal(callerOf(task), task);
   const answer = reply("a1", "(from /page) not a user message");
   assert.equal(callerOf(answer), answer);
+});
+
+test("a view's part: the last turns, earlier ones before a message, or from a message on", () => {
+  const ms = [reply("r0", "hello"), user("u1", "a"), reply("r1", "A"), user("u2", "b"), reply("r2", "B1"), reply("r2b", "B2"), user("u3", "c"), reply("r3", "C")];
+  const last2 = viewPart(ms, { turns: 2 });
+  assert.deepEqual(idsOf(last2.messages), ["u2", "r2", "r2b", "u3", "r3"], "whole turns, from the message that starts one");
+  assert.equal(last2.earlier, 3);
+  const before = viewPart(ms, { before: "u2", turns: 2 });
+  assert.deepEqual(idsOf(before.messages), ["r0", "u1", "r1"], "fewer turns there: from the beginning");
+  assert.equal(before.earlier, 0);
+  assert.deepEqual(viewPart(ms, { after: "r2b", turns: 1 }), { messages: ms.slice(5), earlier: 5 }, "after: from it on, however many turns");
+  assert.deepEqual(idsOf(viewPart(ms, { after: "gone", turns: 1 }).messages), ["u3", "r3"], "after a message no longer there: the last turns");
+  assert.deepEqual(viewPart(ms, { before: "gone", turns: 1 }), { messages: [], earlier: 0 });
+  assert.deepEqual(viewPart(ms, { turns: 10 }), { messages: ms, earlier: 0 });
+});
+
+test("a view's message: a few lines of each piece of a tool call, the rest whole; the call as it is, by its id", () => {
+  const big = "x".repeat(1000);
+  const cut = "x".repeat(300) + "\n… (700 more characters)";
+  const call = { type: "dynamic-tool", toolName: "Bash", toolCallId: "t1", state: "output-available", input: { command: big, n: 3 }, output: { lines: [big] }, toolMetadata: { kind: "command", command: big } };
+  const form = { ...call, toolCallId: "t3", toolMetadata: { kind: "command", command: `pagent ask-user --field ${big}` } };
+  const plan = { ...call, toolCallId: "t4", toolMetadata: { kind: "proposal", plan: big } };
+  const m = { id: "r", role: "assistant", parts: [{ type: "text", text: big }, call, { type: "data-subagent-step", id: "s:1", data: { of: "t0", part: { ...call, toolCallId: "t2" } } }, form, plan] } as unknown as UIMessage;
+  const v = viewMessage(m) as any;
+  assert.equal(v.parts[0].text, big, "what the conversation says stays whole");
+  assert.deepEqual(v.parts[1].input, { command: cut, n: 3 });
+  assert.equal(v.parts[1].output, JSON.stringify({ lines: [big] }, null, 2).slice(0, 300) + `\n… (${JSON.stringify({ lines: [big] }, null, 2).length - 300} more characters)`, "as a card lays it out");
+  assert.equal(v.parts[1].toolMetadata.command, cut);
+  assert.equal(v.parts[2].data.part.input.command, cut, "a sub-agent's call too");
+  assert.equal(v.parts[3].toolMetadata.command, `pagent ask-user --field ${big}`, "a form's command is read by its card: whole");
+  assert.equal(v.parts[4].toolMetadata.plan, big, "what the runner says of a call (a plan) stays whole");
+  assert.equal((m.parts[1] as any).input.command, big, "the history itself is not changed");
+  const plain = user("u", "hi");
+  assert.equal(viewMessage(plain), plain);
+  assert.deepEqual(toolCallOf([m], "t2"), { input: { command: big, n: 3 }, output: { lines: [big] }, errorText: undefined });
+  assert.equal(toolCallOf([m], "nope"), null);
 });

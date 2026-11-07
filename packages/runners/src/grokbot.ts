@@ -34,17 +34,25 @@
 // fails is logged only when a person must do something, or after five in a row.
 //
 // None: a terminal (Grok Bot's TUI is its desktop app: info's resume opens it), token use (gbot says none), strangers,
-// holder, the follow op. Its instructions are Grok Bot's own: the bot runs elsewhere and cannot run `pagent`, so it
-// gets no system prompt or skills from the app; a message's "(from …)" line says who is talking.
+// holder, the follow op. The bot runs elsewhere and cannot run `pagent`, so it gets no system prompt or skills from the
+// app; a message's "(from …)" line says who is talking. Its workspace (declared `workspace`, a folder of the app) is
+// where what it is and keeps lives: a bot pagent makes is told so in its first message (setupOf).
+//
+// Accounts (lib/grokbot-accounts.ts, SPEC 13.28): with the person's accounts given to pagent, each turn goes to the
+// first with this week's usage left, every gbot call and message by that account's login (never the app's session);
+// the bot is made there by its name when it is not there. Another account than the turn before: the session follows
+// that account's bot from then on. A message goes as the app sends one (sendByLogin): since Grok Bot 0.78 the bot's
+// computer refuses gbot's.
 // Versions: grok-bot-cli 0.12.4 (with #143), Grok Bot 0.68; checked live again on 0.75 (2026-10-22).
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { platform } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { UIMessageChunk } from "ai";
 import { loadSession, saveSession } from "./lib/common.ts";
 import type { AgentInput, Describe, Op } from "./lib/contract.ts";
-import { doctor, gbot, GbotError, said } from "./lib/gbot.ts";
+import { accountNow, appVersion, doctor, gbot, GbotError, said, sendByLogin, useAccount } from "./lib/gbot.ts";
+import { accountOf, keepAccountOf, pick, tokenOf } from "./lib/grokbot-accounts.ts";
 import { cardCall, cardOf, entriesOf, historyOf, isUser, keep, lastOf, readRecord, recordFile, Reply, trajectoryOf, untold, withoutHeads, wordsIn, entryText, type Entry, type Seen } from "./lib/grokbot-thread.ts";
 import { askApp } from "./lib/permission.ts";
 
@@ -136,16 +144,31 @@ async function freshen(input: Input) {
   if (existsSync(file) && !(input.thread && inTurn(readRecord(file)))) report(file);
 }
 
-/** The declared bot, by name or id (made when it is not there and the declaration says createBot). */
-async function resolveBot(name: string, create: boolean): Promise<{ id: string; name: string; kind: string }> {
+/**
+ * The declared bot, by name or id (made when it is not there and the declaration says createBot, or on an account of
+ * pagent's own, where a bot is a name: grokbot-accounts.ts). made: it was made now.
+ */
+async function resolveBot(name: string, create: boolean): Promise<{ id: string; name: string; kind: string; made?: true }> {
+  const on = accountNow();
+  if (on && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name)) throw new Error(`a bot's id is one account's: with pagent's Grok Bot accounts, declare the bot by its name ({ bot: "scout" }), the same on every account`);
   try {
     return await gbot(["bots", "get", name, "--json"]);
   } catch (e) {
     if (!(e instanceof GbotError && e.kind === "no-bot") || !create) throw e;
-    console.error(`grokbot: no bot "${name}": making it (createBot)`);
-    return gbot(["bots", "create", "--name", name, "--json"]);
+    console.error(`grokbot: no bot "${name}"${on ? ` on account ${on.name}` : ""}: making it`);
+    return { ...(await gbot(["bots", "create", "--name", name, "--json"])), made: true };
   }
 }
+
+/**
+ * The first message a bot made by pagent gets, ahead of the app's: where its work is. A bot is only a name on each
+ * account (it may be made again on another one when this one's week is used up), so what it is, knows and keeps lives
+ * in its workspace, a folder of the app's on this machine, which it reads and writes with Grok Bot's local access.
+ */
+const setupOf = (input: Input, workspace: string | undefined) =>
+  workspace
+    ? `(from pagent) You were just made for the agent ${input.env?.PAGENT_AGENT ? `${input.env.PAGENT_NODE ?? ""}#${input.env.PAGENT_AGENT}` : "of a pagent app"}. Your workspace is the folder ${workspace} on this computer: read its README.md first (who you are, what you do, how), and keep what you learn, your lists and your notes there, not only in your own memory: you may be made again on another Grok Bot account, and the workspace is what carries over.\n\n`
+    : "";
 
 // ---------------------------------------------------------------- the session
 
@@ -153,19 +176,59 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
   const failed = (errorText: string) => (out({ type: "failed", errorText: said(errorText) }), exit(2));
   const name = declared(input);
   if (!name) return failed('a Grok Bot agent says which bot it is: { cli: "grokbot", bot: "<its name or id>" } (`gbot bots list` shows them; createBot: true makes it)');
+  // pagent's own accounts (grokbot-accounts.ts): the first with this week's usage left; none: the app's account.
+  const picked = await pick(appVersion());
+  if (picked instanceof Error) return failed(picked.message);
+  useAccount(picked);
   const broken = await doctor(true);
   if (broken) return failed(broken);
-  let bot: { id: string; name: string };
+  // Its workspace: "~/…" from the app's folder, else from the agent's (as a declaration's cwd).
+  const ws = typeof input.options?.workspace === "string" && input.options.workspace.trim() ? input.options.workspace.trim() : undefined;
+  const workspace = ws && (ws.startsWith("~/") ? join(input.appRoot ?? input.cwd, ws.slice(2)) : isAbsolute(ws) ? ws : join(input.cwd, ws));
+  let bot: { id: string; name: string; made?: true };
   try {
-    bot = await resolveBot(name, input.options?.createBot === true);
+    bot = await resolveBot(name, input.options?.createBot === true || !!picked);
     if (typeof bot?.id !== "string") throw new Error(`gbot said no bot for "${name}"`);
   } catch (e) {
     return failed((e as Error).message);
   }
+  let setup = bot.made ? setupOf(input, workspace) : ""; // goes ahead of its first message
   saveSession(input.stateDir, bot.id);
-  const file = recordFile(input.stateDir, bot.id);
-  const known = knownOf(file);
-  const decided = new Set(readRecord(file).flatMap((s) => ("decided" in s ? [s.decided.entryId] : [])));
+  keepAccountOf(input.stateDir, picked?.name);
+  let file = recordFile(input.stateDir, bot.id);
+  let known = knownOf(file);
+  let decided = new Set(readRecord(file).flatMap((s) => ("decided" in s ? [s.decided.entryId] : [])));
+  /**
+   * Before a turn, with pagent's accounts: the account to send it to, and the bot there (made when it is not there,
+   * its workspace said). Another account than the one in use: its bot's thread is followed from now on (the history
+   * shows that bot's). A string: why no account can take it.
+   */
+  const toAccount = async (): Promise<string | null> => {
+    if (!picked) return null;
+    const now = await pick(appVersion());
+    if (now instanceof Error) return now.message;
+    if (now?.name === accountNow()?.name) return null;
+    const was = accountNow();
+    useAccount(now);
+    try {
+      const b = await resolveBot(name, true);
+      bot = b;
+      setup = b.made ? setupOf(input, workspace) : "";
+    } catch (e) {
+      useAccount(was);
+      return `account ${now!.name}: ${(e as Error).message}`;
+    }
+    console.error(`grokbot: ${bot.name} goes on on account ${now!.name}${was ? ` (${was.name}: this week's usage is used up)` : ""}`);
+    saveSession(input.stateDir, bot.id);
+    keepAccountOf(input.stateDir, now!.name);
+    file = recordFile(input.stateDir, bot.id);
+    known = knownOf(file);
+    decided = new Set(readRecord(file).flatMap((s) => ("decided" in s ? [s.decided.entryId] : [])));
+    try {
+      await sync(bot.id, file, known, existsSync(file) ? 40 : 200);
+    } catch {}
+    return null;
+  };
   try {
     await sync(bot.id, file, known, existsSync(file) ? 40 : 200);
     readNow(input.stateDir);
@@ -342,15 +405,28 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
     starting = true;
     const ask = queue.shift()!;
     try {
+      const none = await toAccount();
+      if (none) return out({ type: "ask-failed", run: ask.run, errorText: said(none) });
       const broken = await doctor();
       if (broken) return out({ type: "ask-failed", run: ask.run, errorText: said(broken) });
       const corr = corrOf(ask.run);
+      const message = setup + ask.message;
       let receipt: any;
       try {
-        receipt = await gbot(["send", bot.id, "--json", "--no-history", "--correlation-id", corr, "--", ask.message], { timeoutMs: 90_000 });
+        // On pagent's own account: as the app sends (gbot's way is refused since Grok Bot 0.78).
+        receipt = accountNow() ? await sendByLogin(bot.id, message, corr) : await gbot(["send", bot.id, "--json", "--no-history", "--correlation-id", corr, "--", message], { timeoutMs: 90_000 });
       } catch (e) {
-        const why = e instanceof GbotError && e.kind === "gateway" ? ((await doctor(true)) ?? e.message) : (e as Error).message;
-        return out({ type: "ask-failed", run: ask.run, errorText: said(why) });
+        // Refused at the bot's computer (Grok Bot 0.78 on): sent as the app sends, through Cursor's backend.
+        if (e instanceof GbotError && e.kind === "send-refused") {
+          try {
+            receipt = await sendByLogin(bot.id, message, corr);
+          } catch (f) {
+            return out({ type: "ask-failed", run: ask.run, errorText: said(`${e.message}, ${(f as Error).message}`) });
+          }
+        } else {
+          const why = e instanceof GbotError && e.kind === "gateway" ? ((await doctor(true)) ?? e.message) : (e as Error).message;
+          return out({ type: "ask-failed", run: ask.run, errorText: said(why) });
+        }
       }
       // gbot 0.12.4 says no messageId (delivery "unknown") for every message: the thread shows it by its correlation id.
       const messageId = typeof receipt?.messageId === "string" ? receipt.messageId : undefined;
@@ -358,6 +434,7 @@ async function sessionOp(input: Input, commands: AsyncIterator<string>) {
       const now = Date.now();
       turn = { run: ask.run, corr, ...(messageId ? { messageId } : {}), userSeen: false, started: now, activity: now, reply: new Reply((c) => emit(c as Record<string, unknown>)), lines: [], cards: new Set(), failures: 0 };
       emit({ type: "turn", turnId: ask.run });
+      setup = ""; // said once
       // Its id in the history is the run's (lib/grokbot-thread.ts, turnsIn): the app keeps its own under it (core ids.ts).
       emit({ type: "user", turnId: ask.run, id: ask.run, text: ask.message, clientId: ask.run, meta: ask.meta });
       quietPolls = 0;
@@ -441,6 +518,12 @@ function describeOp() {
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })[Symbol.asyncIterator]();
 const first = await lines.next();
 const input = JSON.parse(first.done ? "{}" : first.value) as Input;
+// A quick op reads the bot the session had, on the account it was on.
+if (input.op !== "session" && input.op !== "describe" && input.stateDir) {
+  const on = accountOf(input.stateDir);
+  const token = on ? tokenOf(on) : "";
+  if (on && token) useAccount({ name: on, token });
+}
 if (input.op === "describe") describeOp();
 else if (input.op === "session") await sessionOp(input, lines);
 else if (input.op === "history") await historyOp(input);

@@ -12,7 +12,7 @@ import { onEvent } from "../events.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { harnessEnv } from "../shell-env.ts";
 import { isBusy, openTerminal, stopTerminal, terminalOf, whenClosed } from "../terminal.ts";
-import { programChanged, programOf } from "../program.ts";
+import { nodeBin, programChanged, programOf } from "../program.ts";
 import { listNodes } from "../tree.ts";
 import type { SessionDriver, Turn } from "./driver.ts";
 import { pinHarness } from "../settings.ts";
@@ -116,7 +116,7 @@ function ensureSession(ctx: Ctx, ref: AgentRef): Promise<Live> {
     const input = { op: "session", ...base, ...(await agentInput(ctx, ref, decl)) };
     const service = live.service ? { script, service: live.service } : {};
     await spawnProc(
-      { id: live.id, kind: "pipe", command: process.execPath, args: [script], cwd: base.cwd, env: await harnessEnv(), stdin: JSON.stringify(input) + "\n", open: true, meta: { app: ctx.root, type: "session", ...ref, steers: live.steers, follows: live.follows, ...service } },
+      { id: live.id, kind: "pipe", command: nodeBin(), args: [script], cwd: base.cwd, env: await harnessEnv(), stdin: JSON.stringify(input) + "\n", open: true, meta: { app: ctx.root, type: "session", ...ref, steers: live.steers, follows: live.follows, ...service } },
       sessionEvents(ctx, live, ok, fail),
     );
   })().catch((e) => {

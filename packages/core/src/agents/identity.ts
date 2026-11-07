@@ -5,6 +5,7 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { appId, daemonPaths } from "../daemon-protocol.ts";
 import { engine } from "../engine.ts";
+import { nodeBin } from "../program.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { harnessEnv } from "../shell-env.ts";
 import type { Ctx } from "./types.ts";
@@ -32,16 +33,17 @@ export function agentOf(ctx: Ctx, node: string, agent: string, token: string): A
  * The `pagent` command agents run: this engine's CLI, under PAGENT_HOME, put first on their PATH so it is this
  * engine's even when the user has another pagent installed.
  */
-let bin: string | null = null;
+let bin: { node: string; dir: string } | null = null;
 export function agentBin(): string {
-  if (bin) return bin;
+  const node = nodeBin();
+  if (bin?.node === node) return bin.dir;
   const cli = engine.core("cli");
-  const dir = join(daemonPaths().home, "bin", createHash("sha1").update(`${process.execPath}\n${cli}`).digest("hex").slice(0, 10));
+  const dir = join(daemonPaths().home, "bin", createHash("sha1").update(`${node}\n${cli}`).digest("hex").slice(0, 10));
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "pagent"), `#!/bin/sh\nexec ${q(process.execPath)} ${q(cli)} "$@"\n`);
+  writeFileSync(join(dir, "pagent"), `#!/bin/sh\nexec ${q(node)} ${q(cli)} "$@"\n`);
   chmodSync(join(dir, "pagent"), 0o755);
-  return (bin = dir);
+  return (bin = { node, dir }).dir;
 }
 
 /**

@@ -23,6 +23,9 @@ describe("agents", () => {
         `  await tell("/t#bot", "!say " + tasks.join(", "));\n  return "told /t#bot";\n}\n` +
         `export async function lists() {\n  return list();\n}\n`,
       "w/page.tsx": `export default function Page() { return <div />; }\n`,
+      // Server code reading what agents are doing (agentStatus of "pagent/server").
+      "s/page.tsx": `export default function Page() { return <div />; }\n`,
+      "s/actions.ts": `"use server";\nimport { agentStatus } from "pagent/server";\nexport async function all() {\n  return agentStatus();\n}\nexport async function one({ address }: { address: string }) {\n  return agentStatus(address);\n}\n`,
       // An argument with a default: called without one, the default applies.
       "w/actions.ts":
         `"use server";\nexport async function list({ q = "all" }: { q?: string } = {}) {\n  return "list " + q;\n}\n` +
@@ -77,6 +80,59 @@ describe("agents", () => {
     assert.match(await ask(app, "/", '!sh pagent tell /b "!say done by b"'), /Delegated to \/b#bot/);
     await until(async () => (await history(app, "/")).some((l) => /^user \(from \/b#bot\): Result of your delegation to \/b#bot \(message \S+\):/.test(l)), "the delegation's result");
     assert.ok((await history(app, "/b")).includes("user (from /#bot): !say done by b"));
+  });
+
+  test("tell --no-reply: the other agent is told it wants none, and nothing comes back", async () => {
+    assert.match(await ask(app, "/", '!sh pagent tell /b --no-reply "!say receipt"'), /^Told \/b#bot \(message \S+\); no reply comes back\.$/m);
+    await until(async () => (await history(app, "/b")).includes("user (from /#bot): !say receipt"), "the message");
+    const b = await app.get(`/_pagent/history?node=/b&agent=bot`);
+    assert.equal(b.messages.findLast((m: { role: string }) => m.role === "user").metadata.caller.noReply, true, "it reads that it wants none");
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.ok(!(await history(app, "/")).some((l) => /Result of your delegation to \/b#bot \(message \S+\):\s*receipt/.test(l)), "no result came back");
+    assert.match(await ask(app, "/", '!sh pagent tell /b --no-reply --wait "!say x" 2>&1 || true'), /--wait is for the reply, and --no-reply asks for none/);
+  });
+
+  test("a session on this computer outside the app tells an agent as local:<name>: waits for the reply, or asks for none", () => {
+    // --wait: the reply, printed; the agent read who it was from.
+    assert.equal(app.pagent("tell", "/b", "!say hello from outside", "--as", "openarea", "--wait").trim(), "hello from outside");
+    return history(app, "/b").then(async (h) => {
+      assert.ok(h.includes("user (from local:openarea): !say hello from outside"), h.join("\n"));
+      // Without --wait it has nowhere a later reply could go: the agent is told it wants none.
+      assert.match(app.pagent("tell", "/b", "!say noted", "--as", "openarea"), /^Told \/b#bot \(message \S+\); no reply comes back/);
+      await until(async () => (await history(app, "/b")).includes("user (from local:openarea): !say noted"), "the notice");
+      const b = await app.get(`/_pagent/history?node=/b&agent=bot`);
+      assert.deepEqual(b.messages.findLast((m: { role: string }) => m.role === "user").metadata.caller, { kind: "local", name: "openarea", noReply: true });
+      // A name is a short word; .. is an agent's own word for the one above it.
+      assert.throws(() => app.pagent("tell", "/b", "x", "--as", "a b"), /--as names the session telling/);
+      assert.throws(() => app.pagent("tell", "..", "x", "--as", "openarea"), /".." is the agent above the one telling/);
+    });
+  });
+
+  test("the person's pagent agents / tree: whom a session outside the app can tell, and the app's pages", () => {
+    const agents = app.pagent("agents");
+    assert.match(agents, new RegExp(`^${app.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(http://127\\.0\\.0\\.1:\\d+\\)$`, "m"));
+    assert.match(agents, /^ {2}\/#bot +\S+ +idle$/m);
+    assert.match(agents, /^ {2}\/b#bot +\S+ +idle$/m);
+    const tree = app.pagent("tree");
+    assert.match(tree, /^ {2}\/b +#bot$/m);
+    assert.match(tree, /^ {2}\/w$/m); // a page without agents
+  });
+
+  test("server code reads what an agent is doing: busy, since when, quiet since when", async () => {
+    const action = (name: string, input?: unknown) => app.post<{ ok: boolean; value: any; error?: string }>("/_pagent/action", { node: "/s", name, input });
+    const idle = await action("one", { address: "/b" });
+    assert.equal(idle.ok, true, idle.error ?? "");
+    assert.deepEqual({ ...idle.value }, { address: "/b#bot", busy: false, activity: null, since: null, quietSince: null, stuck: false, queued: 0 });
+    const turn = ask(app, "/b", "!sh sleep 3; echo slept");
+    const busy = await until(async () => {
+      const r = await action("one", { address: "/b#bot" });
+      return r.value?.busy ? r.value : null;
+    }, "/b busy");
+    assert.ok(busy.since > Date.now() - 10_000 && busy.quietSince >= busy.since, JSON.stringify(busy));
+    const all = (await action("all")).value as { address: string }[];
+    assert.deepEqual(all.map((a) => a.address).sort(), ["/#bot", "/b#bot", "/t#bot"]);
+    assert.match((await action("one", { address: "/w" })).error ?? "", /no agent at \/w/);
+    await turn;
   });
 
   test("tell ..: the nearest agent above (the root's has none)", async () => {

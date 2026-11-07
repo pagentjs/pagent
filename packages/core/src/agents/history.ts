@@ -171,6 +171,66 @@ export async function history(ctx: Ctx, ref: AgentRef, after?: string): Promise<
   return from >= 0 ? messages.slice(from) : messages;
 }
 
+/** How many turns a view gets at a time (a turn starts at a message to the agent): the latest, then earlier ones. */
+export const VIEW_TURNS = 80;
+
+/**
+ * A view's part of the history: from its `after` message on (it included), when it is still there; else the last
+ * `turns` turns before its `before` message (the earlier ones of a view scrolled up), or before the end. earlier: how
+ * many messages come before the part (0: it starts at the beginning). A `before` no longer there: nothing.
+ */
+export function viewPart(messages: UIMessage[], o: { after?: string; before?: string; turns: number }): { messages: UIMessage[]; earlier: number } {
+  const at = o.after ? messages.findIndex((m) => m.id === o.after) : -1;
+  if (at >= 0) return { messages: messages.slice(at), earlier: at };
+  const end = o.before ? messages.findIndex((m) => m.id === o.before) : messages.length;
+  if (end < 0) return { messages: [], earlier: 0 };
+  let start = end;
+  for (let n = 0; start > 0 && n < o.turns; ) if (messages[--start].role === "user") n++;
+  return { messages: messages.slice(start, end), earlier: start };
+}
+
+const PREVIEW = 300; // what a view gets of each piece of a tool call's input and output; the card fetches the rest
+const cutText = (s: string) => (s.length > PREVIEW ? `${s.slice(0, PREVIEW)}\n… (${s.length - PREVIEW} more characters)` : s);
+const cutValue = (v: unknown): unknown =>
+  typeof v === "string" ? cutText(v) : Array.isArray(v) ? v.map(cutValue) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, cutValue(x)])) : v;
+/** An output as a card shows it (text, or JSON laid out), cut; one short enough as it is. */
+const cutOutput = (v: unknown): unknown => {
+  const text = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+  return text !== undefined && text.length > PREVIEW ? cutText(text) : v;
+};
+function cutPart(p: any): any {
+  if (p.type === "dynamic-tool") {
+    const out = { ...p };
+    if (p.input !== undefined) out.input = cutValue(p.input);
+    if (p.output !== undefined) out.output = cutOutput(p.output);
+    if (typeof p.errorText === "string") out.errorText = cutText(p.errorText);
+    // The command its runner says it ran (the same as its input): cut too, but a form's, which the card reads.
+    const m = p.toolMetadata;
+    if (m?.kind === "command" && typeof m.command === "string" && !/\bpagent\s+ask-user\b/.test(m.command)) out.toolMetadata = { ...m, command: cutText(m.command) };
+    return out;
+  }
+  if (p.type === "data-subagent-step" && p.data?.part) return { ...p, data: { ...p.data, part: cutPart(p.data.part) } };
+  return p;
+}
+
+/**
+ * A message as a view shows it: what its tool calls (and its sub-agents') were given and gave back, a few lines of each
+ * (an agent many turns in has thousands of calls, megabytes of files read and commands' output, which no one reads
+ * until they open that card: then it fetches the call whole, toolCallOf). What the conversation says is left whole,
+ * and so is what the runner says about a call (a plan, a list of steps, a form's command).
+ */
+export const viewMessage = (m: UIMessage): UIMessage => (m.parts.some((p) => p.type === "dynamic-tool" || p.type === "data-subagent-step") ? { ...m, parts: m.parts.map(cutPart) } : m);
+
+/** A tool call of the conversation (or of one of its sub-agents) as it is, by its id: what a card opened shows. */
+export function toolCallOf(messages: UIMessage[], id: string): { input?: unknown; output?: unknown; errorText?: string } | null {
+  for (let i = messages.length - 1; i >= 0; i--)
+    for (const p of messages[i].parts as any[]) {
+      const call = p.type === "dynamic-tool" ? p : p.type === "data-subagent-step" ? p.data?.part : undefined;
+      if (call?.toolCallId === id) return { input: call.input, output: call.output, errorText: call.errorText };
+    }
+  return null;
+}
+
 /**
  * The history as a view that is about to attach to the agent's run should have it: up to the run's message, as the
  * run has it (with the id the run's views know). What the transcript has of the reply so far is left out: attaching

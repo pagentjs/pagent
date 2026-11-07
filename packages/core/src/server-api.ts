@@ -46,10 +46,11 @@ export const node: { path: string; params: Record<string, string | string[]>; di
  * knows it its own way and names its address (`from`). stranger: its words never reach the agent's session; the agent
  * answers them in a one-off turn without tools and a low cap on its answer, which is `reply` (nothing else goes back).
  * new: the agent is a new instance's, made now (without it, an instance of a dynamic page that is not there is an error
- * that lists the ones there are; with it, one that is there is).
+ * that lists the ones there are; with it, one that is there is). noReply: what it answers goes back to no one (an agent's own
+ * call: not to it; a notice or a receipt), and the agent is told so; not with wait, nor to a URL.
  * id: the message's; reply: the answer, when `wait` got it in time (else it goes where `from` says), or a stranger's.
  */
-export async function tell(agent: string, message: string, opts: { from?: string; stranger?: boolean; interject?: boolean; wait?: boolean | number; new?: boolean } = {}): Promise<{ id?: string; reply?: string }> {
+export async function tell(agent: string, message: string, opts: { from?: string; stranger?: boolean; interject?: boolean; wait?: boolean | number; new?: boolean; noReply?: boolean } = {}): Promise<{ id?: string; reply?: string }> {
   const url = process.env.PAGENT_URL;
   const call = process.env.PAGENT_CALL;
   if (!url || !call) throw new Error("tell() works in this app's server code (an action, a route), as the engine runs it");
@@ -128,6 +129,32 @@ export const nodes = {
   move: (from: string, to: string) => engine<{ from: string; to: string }>("/_pagent/move", { from, to }).then((r) => ({ from: r.from, to: r.to })),
   remove: (path: string) => engine<{ removed: string }>("/_pagent/remove", { path }).then((r) => r.removed),
 };
+
+/**
+ * What an agent of this app is doing now, as server code reads it (a watch that should not call a busy agent stalled):
+ * the same as a page's useAgentStatus, in short. busy: in a turn; activity: what it does, one line; since: when its
+ * turn started (ms; null when not in one, or in a turn its terminal started); quietSince: the last sign of it (busy
+ * only); stuck: in a turn and quiet 15 minutes or more; queued: messages waiting for its turn; offline: a remote agent
+ * the other app does not answer for (why).
+ *   const all = await agentStatus()                  every agent, as `pagent agents` lists them
+ *   const { busy } = await agentStatus("/team/kai#kai")
+ */
+export type AgentNow = { address: string; busy: boolean; activity: string | null; since: number | null; quietSince: number | null; stuck: boolean; queued: number; offline?: string };
+export async function agentStatus(): Promise<AgentNow[]>;
+export async function agentStatus(address: string): Promise<AgentNow>;
+export async function agentStatus(address?: string): Promise<AgentNow | AgentNow[]> {
+  const { agents } = await engine<{ agents: AgentNow[] }>("/_pagent/agents");
+  if (address === undefined) return agents;
+  const [n, a] = address.split("#");
+  const node = "/" + (n ?? "").split("/").filter(Boolean).join("/");
+  const found = a ? agents.find((x) => x.address === `${node}#${a}`) : agents.filter((x) => x.address.startsWith(`${node}#`));
+  if (Array.isArray(found)) {
+    if (found.length === 1) return found[0];
+    throw new Error(found.length ? `agentStatus: ${node} has more than one agent (${found.map((x) => x.address).join(", ")}): name one` : `agentStatus: no agent at ${node}`);
+  }
+  if (!found) throw new Error(`agentStatus: no agent ${address} (agentStatus() lists them)`);
+  return found;
+}
 
 async function engine<T>(path: string, body?: unknown): Promise<T> {
   const url = process.env.PAGENT_URL;

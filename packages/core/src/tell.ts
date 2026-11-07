@@ -48,6 +48,11 @@ export type TellOptions = {
    * merely names it (a typo would start a fresh agent), and `new` never reaches one that is made already.
    */
   new?: boolean;
+  /**
+   * No reply: what it answers goes back to no one (an agent's tell: not to that agent; it is told so, "(from …, no
+   * reply)"). For a notice or a receipt, which would otherwise wake the sender only to read "done".
+   */
+  noReply?: boolean;
 };
 
 /** What a tell did. id: the message's (an automatic reply names it as inReplyTo); reply: the answer, when waited for. */
@@ -99,7 +104,11 @@ const NO_KEY =
  */
 export async function tell(ctx: Ctx, call: Pick<Call, "caller">, to: string, message: string, opts: TellOptions = {}): Promise<Told> {
   if (!message.trim()) throw new Error("tell: an empty message");
-  if (isUrl(to)) return tellOutside(ctx, call, to.trim(), message, opts);
+  if (opts.noReply && opts.wait) throw new Error("tell: wait is for the reply, and noReply asks for none");
+  if (isUrl(to)) {
+    if (opts.noReply) throw new Error(`tell: noReply is for this app's agents; another app's agent replies to your message route, which decides what to do with it`);
+    return tellOutside(ctx, call, to.trim(), message, opts);
+  }
   if (to.trim() === "..") {
     if (call.caller.kind !== "agent") throw new Error(`tell: ".." is the agent above the one telling; this code runs for ${callerName(call.caller) || "a person"}`);
     to = keyOf(await agentAbove(ctx, call.caller));
@@ -136,6 +145,11 @@ export async function tell(ctx: Ctx, call: Pick<Call, "caller">, to: string, mes
   } else if (opts.stranger) throw new Error(`tell: stranger is for code serving a caller from outside; this code runs for ${callerName(caller) || "a person"}`);
   else if (caller.kind === "agent") replyTo = { node: caller.node, agent: caller.agent };
   if (replyTo && keyOf(replyTo) === keyOf(target)) throw new Error(`tell: ${keyOf(target)} is the sender itself`);
+  if (opts.noReply) {
+    replyTo = undefined;
+    replyPost = undefined;
+    if (caller.kind === "agent" || caller.kind === "local") caller = { ...caller, noReply: true };
+  }
 
   // Its chain: who waits on it (a sender that waits for the reply, and whoever waits on that one), so a waiting tell
   // back up that chain is refused instead of deadlocking.

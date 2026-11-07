@@ -111,7 +111,7 @@ const cases: Case[] = [
     setup: (dir) => ({
       cwd: dir,
       stateDir: join(dir, "state"),
-      env: { GBOT_BIN: join(repo, "test/lib/fake-gbot.ts"), FAKE_GBOT_DIR: join(dir, "gbot"), GROKBOT_POLL_MS: "50", GROKBOT_QUIET_MS: "400", GROKBOT_IDLE_MS: "200" },
+      env: { GBOT_BIN: join(repo, "test/lib/fake-gbot.ts"), FAKE_GBOT_DIR: join(dir, "gbot"), GROKBOT_POLL_MS: "50", GROKBOT_QUIET_MS: "400", GROKBOT_IDLE_MS: "200", PAGENT_HOME: join(dir, "pagent-home") },
       input: { options: { bot: "Researcher" } },
     }),
     turn: { message: '!step x_search {"query":"lisbon trams"}\n!approve npm publish\n!say a summary of 3 posts', answer: /^a summary of 3 posts$/, asks: true },

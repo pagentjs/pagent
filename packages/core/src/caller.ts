@@ -3,9 +3,12 @@
 // since a transcript keeps only text.
 //   user      a person writing in their own conversation (a chat on a page, the agent's terminal): no prefix, as written
 //   page      a page's button or event: "(from /ideas) …"
-//   agent     another agent of the app: "(from /ideas#ideas) …"
+//   agent     another agent of the app: "(from /ideas#ideas) …" (", no reply" when it asked for none)
 //   trigger   one of the app's triggers: "(from trigger:/ops#sweep) …"
 //   pagent    the engine: the outcome of a command of the agent's (an answer, a reply): "(from pagent) …"
+//   local     a session on this computer outside the app (a terminal, another harness's agent), by the name it gives
+//             (`pagent tell --as <name>`): "(from local:openarea) …". It is the person's own machine, so its words are
+//             taken as theirs are; it gets the reply when it waits for one, else none (", no reply").
 //   external  someone outside the app, through one of its routes: "(from http://192.168.0.50:4880/api/message) …", its
 //             words wrapped as data, with where they came from and the key they came with (SPEC 13.7: who a sender is
 //             comes from its key, and nothing else). Without a key it is a stranger, whom the engine answers in a
@@ -19,9 +22,12 @@
 export type Caller = (
   | { kind: "user" }
   | { kind: "page"; path: string }
-  | { kind: "agent"; node: string; agent: string }
+  /** noReply: the sender asked for none (pagent tell --no-reply): "(from /a#a, no reply) …". */
+  | { kind: "agent"; node: string; agent: string; noReply?: true }
   | { kind: "trigger"; node: string; name: string }
   | { kind: "pagent" }
+  /** noReply: it does not wait for the reply, which then goes to no one: "(from local:x, no reply) …". */
+  | { kind: "local"; name: string; noReply?: true }
   /**
    * ip: the address the request came from. from: the sender's address for replies (its own message route), as it says.
    * key: the key it came with (keys.ts): its holder's name and the part of the app it reaches. id: its own id for the
@@ -41,6 +47,7 @@ export function callerName(c: Caller): string {
     case "agent": return `${c.node}#${c.agent}`;
     case "trigger": return `trigger:${c.node}#${c.name}`;
     case "pagent": return "pagent";
+    case "local": return `local:${c.name}`;
     case "external": return c.from ?? `ip:${c.ip || "unknown"}`;
   }
 }
@@ -63,11 +70,11 @@ function externalNote(c: Caller & { kind: "external" }): string {
 /** The line the agent's harness gets: the message, prefixed with where it comes from (a person's words: as they are). */
 export function callerLine(c: Caller, message: string): string {
   if (c.kind === "user") return message;
-  const head = `(from ${callerName(c)}${c.via?.length ? ` via ${c.via.join(",")}` : ""})`;
+  const head = `(from ${callerName(c)}${c.via?.length ? ` via ${c.via.join(",")}` : ""}${(c.kind === "agent" || c.kind === "local") && c.noReply ? ", no reply" : ""})`;
   return c.kind === "external" ? `${head} ${externalNote(c)}\n<message>\n${message}\n</message>` : `${head} ${message}`;
 }
 
-const HEAD = /^\(from (\S+?)(?: via (\S+))?\) ([\s\S]*)$/;
+const HEAD = /^\(from (\S+?)(?: via (\S+?))?(, no reply)?\) ([\s\S]*)$/;
 const EXTERNAL = new RegExp(
   `^(?:A message|The reply to your message (\\S+)) from outside this app, (?:from your remote agent (\\S+), )?(?:with the key "([\\w.-]+)" \\(for (\\S+)\\), )?` +
     `sent from (\\S+?|${UNKNOWN})(, by a stranger \\(no key\\))?\\. [^\\n]*\\n<message>\\n([\\s\\S]*)\\n</message>$`,
@@ -77,12 +84,13 @@ const EXTERNAL = new RegExp(
 export function parseLine(text: string): { caller: Caller; message: string } | null {
   const m = HEAD.exec(text);
   if (!m) return null;
-  const [, who, path, rest] = m;
+  const [, who, path, noReply, rest] = m;
   const withVia = (c: Caller): Caller => (path ? { ...c, via: path.split(",") } : c);
   let found: RegExpExecArray | null;
   if (who === "pagent") return { caller: withVia({ kind: "pagent" }), message: rest };
+  if ((found = /^local:([\w.-]+)$/.exec(who))) return { caller: withVia({ kind: "local", name: found[1], ...(noReply ? { noReply: true as const } : {}) }), message: rest };
   if ((found = /^trigger:(\/[^#\s]*)#(\S+)$/.exec(who))) return { caller: withVia({ kind: "trigger", node: found[1], name: found[2] }), message: rest };
-  if ((found = /^(\/[^#\s]*)#(\S+)$/.exec(who))) return { caller: withVia({ kind: "agent", node: found[1], agent: found[2] }), message: rest };
+  if ((found = /^(\/[^#\s]*)#(\S+)$/.exec(who))) return { caller: withVia({ kind: "agent", node: found[1], agent: found[2], ...(noReply ? { noReply: true as const } : {}) }), message: rest };
   if (who.startsWith("/")) return { caller: withVia({ kind: "page", path: who }), message: rest };
   if (/^(https?:\/\/|ip:)/.test(who) && (found = EXTERNAL.exec(rest))) {
     const [, inReplyTo, remote, key, scope, ip, stranger, message] = found;

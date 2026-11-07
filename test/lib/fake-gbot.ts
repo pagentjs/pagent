@@ -20,7 +20,9 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const dir = process.env.FAKE_GBOT_DIR ?? join(process.cwd(), ".fake-gbot");
+// FAKE_GBOT_ACCOUNTS: each Cursor login is an account of its own, with its own bots (FAKE_GBOT_DIR/acct-<login>).
+const login = process.env.FAKE_GBOT_ACCOUNTS ? process.env.CURSOR_ACCESS_TOKEN : "";
+const dir = join(process.env.FAKE_GBOT_DIR ?? join(process.cwd(), ".fake-gbot"), login ? `acct-${login}` : "");
 mkdirSync(dir, { recursive: true });
 const argv = process.argv.slice(2);
 appendFileSync(join(dir, "calls.jsonl"), JSON.stringify(argv) + "\n");
@@ -80,7 +82,7 @@ const NO_DIR = "Could not find a Grok Bot agents directory. Pass --dir or set GR
 
 if (argv.includes("--version")) print("0.12.4");
 if (words[0] === "doctor") {
-  const session = failure === "no-session" ? { present: false, usable: false } : failure === "v3" ? { present: true, usable: false, code: "UNSUPPORTED_VERSION", error: "Unsupported Grok Bot gateway descriptor version 3." } : { present: true, usable: true };
+  const session = failure === "no-session" || failure === "no-send" ? { present: false, usable: false } : failure === "v3" ? { present: true, usable: false, code: "UNSUPPORTED_VERSION", error: "Unsupported Grok Bot gateway descriptor version 3." } : { present: true, usable: true };
   print({ candidates: [], found: [], gatewayAuthPresent: failure !== "no-session", grokBotAppSession: session, note: "Live roster is on the box.", resolved: null });
 }
 // The Cursor login's way in (CURSOR_ACCESS_TOKEN), taken as gbot takes it: only when there is no app session (gbot
@@ -95,7 +97,10 @@ if (cursor && failure === "waking") {
   fail(`${words[0] === "thread" ? "getAgentTranscriptTail" : "listAgents"} failed: 500 [deadline_exceeded] the operation timed out`);
 }
 if (cursor && failure === "asleep") rmSync(join(dir, "failure"));
-if (!cursor && failure === "no-session") fail(NO_DIR);
+if (!cursor && (failure === "no-session" || (failure === "no-send" && !process.env.FAKE_GBOT_BACKEND))) fail(NO_DIR);
+// "no-send": no app session, and its computer refuses gbot's send whichever way it came in (Grok Bot 0.78); it still
+// reads. FAKE_GBOT_BACKEND: the test's stand-in for Cursor's backend sending it the app's way.
+if (failure === "no-send" && words[0] === "send" && !process.env.FAKE_GBOT_BACKEND) fail("sendPrompt failed: 502 A Sand box session is not permitted on this endpoint. (delivery unknown; check the thread before resending)");
 if (!cursor && failure === "v3") fail("Unsupported Grok Bot gateway descriptor version 3.");
 if (!cursor && (failure === "asleep" || failure === "waking")) fail("listAgents failed: 417 Expectation Failed");
 

@@ -25,6 +25,11 @@ export type TuiCommand = {
   decl?: string;
   /** The harness program it starts (program.ts): one updated since makes it stale too. */
   program?: string;
+  /**
+   * The node its hooks and its `pagent` run with (program.ts): one that went, or that is not current, makes it stale
+   * too. Not `node`: that is the agent's address, and the daemon keeps both side by side (meta).
+   */
+  nodeBin?: string;
 };
 
 /**
@@ -52,6 +57,7 @@ export type Term = {
   screen: InstanceType<typeof xterm.Terminal>; // what it shows, drawn as a terminal draws it (screenLines)
   decl?: string; // see TuiCommand.decl
   program?: string; // see TuiCommand.program
+  nodeBin?: string; // see TuiCommand.nodeBin
   dialog?: string; // blocked on a dialog that is no permission prompt: its first line, as its screen shows it (agents/tui.ts)
 };
 
@@ -77,7 +83,7 @@ export function terminalStatus(ref: AgentRef): { open: boolean; state?: string; 
 // (turns typed in the TUI reach the conversation from the transcript, agents.ts). Status views reload; chats do not.
 export const statusChanged = (ref: AgentRef) => broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "status" } });
 
-type Known = Pick<Term, "status" | "session" | "pid" | "keys" | "decl" | "program">;
+type Known = Pick<Term, "status" | "session" | "pid" | "keys" | "decl" | "program" | "nodeBin">;
 
 function track(ref: AgentRef, id: string, known: Known, size = { cols: 120, rows: 40 }): { term: Term; follow: (e: ProcEvent) => void } {
   const screen = new xterm.Terminal({ cols: size.cols, rows: size.rows, scrollback: 0, allowProposedApi: true });
@@ -121,11 +127,11 @@ export function openTerminal(ref: AgentRef, cmd: TuiCommand, size: { cols: numbe
   if (!opening.has(key)) {
     opening.set(key, (async () => {
       const id = `term:${appRoot}:${key}`;
-      const { trust: _trust, session, env: _env, keys, decl, program, ...spawn } = cmd;
-      const { term, follow } = track(ref, id, { status: null, session, keys, decl, program }, size);
+      const { trust: _trust, session, env: _env, keys, decl, program, nodeBin, ...spawn } = cmd;
+      const { term, follow } = track(ref, id, { status: null, session, keys, decl, program, nodeBin }, size);
       const env = { ...(await harnessEnv()), ...cmd.env, TERM: "xterm-256color", COLORTERM: "truecolor" };
       // What a restarted server needs to know of it, kept with the process in the daemon.
-      const meta = { app: appRoot, type: "terminal", ...ref, ...(session ? { session } : {}), ...(keys ? { keys } : {}), ...(decl ? { decl } : {}), ...(program !== undefined ? { program } : {}), size };
+      const meta = { app: appRoot, type: "terminal", ...ref, ...(session ? { session } : {}), ...(keys ? { keys } : {}), ...(decl ? { decl } : {}), ...(program !== undefined ? { program } : {}), ...(nodeBin !== undefined ? { nodeBin } : {}), size };
       term.pid = (await spawnProc({ id, kind: "pty", ...spawn, env, ...size, meta }, follow)).pid;
       terms.set(key, term);
       for (const w of watchers) w(term);
@@ -141,8 +147,14 @@ export async function recoverTerminals(root: string) {
   appRoot = root;
   for (const p of await listProcs(root)) {
     if (p.kind !== "pty" || p.meta.type !== "terminal" || p.exit) continue;
-    const ref = { node: p.meta.node, agent: p.meta.agent };
-    const { term, follow } = track(ref, p.id, { status: p.status, session: p.meta.session, pid: p.pid, keys: p.meta.keys, decl: p.meta.decl, program: p.meta.program }, p.meta.size);
+    // Started by a server of 2026-11-03 to -05, its meta's node is the node program (it took the agent's address's
+    // place); its address is still in its id, `term:<app>:<node>#<agent>`.
+    const mixed = typeof p.meta.node === "string" && p.meta.node.includes("\t");
+    const node = mixed ? p.id.slice(`term:${root}:`.length).replace(/#[^#]*$/, "") : p.meta.node;
+    if (mixed && !node.startsWith("/")) continue; // not the shape it was opened with: leave it to the daemon
+    const ref = { node, agent: p.meta.agent };
+    const nodeBin = mixed ? p.meta.node : p.meta.nodeBin;
+    const { term, follow } = track(ref, p.id, { status: p.status, session: p.meta.session, pid: p.pid, keys: p.meta.keys, decl: p.meta.decl, program: p.meta.program, nodeBin }, p.meta.size);
     terms.set(keyOf(ref), term);
     for (const w of watchers) w(term);
     await attachProc(p.id, follow);

@@ -11,7 +11,7 @@ import { driverOf } from "./driver.ts";
 import { forget } from "./history.ts";
 import { agentBin } from "./identity.ts";
 import { agentDecl, agentInput, declOf, invoke, runnerBase, runnerScript, turnsOf } from "./runner.ts";
-import { programChanged, programFile, programOf } from "../program.ts";
+import { nodeProgram, programChanged, programFile, programOf } from "../program.ts";
 import { askOrDecline, chunkHandler, taken, unattended, type Push } from "./runs.ts";
 import type { Ctx, Run } from "./types.ts";
 
@@ -390,7 +390,7 @@ export async function interactiveCommand(ctx: Ctx, ref: AgentRef, fork = false):
   // What it runs is kept with it (program.ts): an update of its harness makes it stale.
   await invoke(runnerScript(decl.runner), { op: "interactive", ...base, ...bound.input, fork, ...(await agentInput(ctx, ref, decl)) }, base.cwd, (e) => {
     if (e.type !== "command") return;
-    cmd = { command: e.command, args: e.args, cwd: e.cwd, env: e.env, trust: e.trust, keys: { ...e.keys, ...(typeof e.prompt === "string" ? { prompt: e.prompt } : {}) }, ...(bound.session ? { session: bound.session } : {}), decl: declSignature(decl), program: programOf(e.command, e.env?.PATH ?? env.PATH) };
+    cmd = { command: e.command, args: e.args, cwd: e.cwd, env: e.env, trust: e.trust, keys: { ...e.keys, ...(typeof e.prompt === "string" ? { prompt: e.prompt } : {}) }, ...(bound.session ? { session: bound.session } : {}), decl: declSignature(decl), program: programOf(e.command, e.env?.PATH ?? env.PATH), nodeBin: nodeProgram() };
   });
   if (!cmd) throw new Error(`runner ${decl.runner} has no interactive mode`);
   // `shell: true`: started through the user's login shell, so their function or alias for the CLI applies.
@@ -427,15 +427,15 @@ export async function restartTerminal(ref: AgentRef): Promise<string> {
 
 /**
  * Why its TUI is stale: started with a declaration that is not the agent's any more ("settings", declSignature), or
- * on a harness updated since ("update", program.ts; one started before its program was kept counts as that, so it is
- * brought up to date once); false: it is not.
+ * on a harness updated since, or a node that is not the one its hooks and its `pagent` run with any more ("update",
+ * program.ts; one started before these were kept counts as that, so it is brought up to date once); false: it is not.
  */
 export async function tuiStale(ctx: Ctx, ref: AgentRef, term = terminalOf(ref)): Promise<"settings" | "update" | false> {
   if (!term) return false;
   const decl = await declOf(ctx, ref).catch(() => undefined);
   if (!decl) return false;
   if (term.decl && (await turnsOf(decl)) === "tui" && declSignature(decl) !== term.decl) return "settings";
-  return term.program === undefined || programChanged(term.program, (await harnessEnv()).PATH) ? "update" : false;
+  return term.program === undefined || term.nodeBin !== nodeProgram() || programChanged(term.program, (await harnessEnv()).PATH) ? "update" : false;
 }
 
 const REFRESH_QUIET = Number(process.env.PAGENT_TUI_REFRESH_MS) || 60_000; // tests make it short
@@ -455,8 +455,9 @@ export async function refreshTuis(ctx: Ctx) {
     if (!why || !idle()) continue;
     refreshing.add(key);
     try {
-      const was = programFile(term.program);
-      console.log(`restarting the terminal of ${key}: ${why === "update" ? `its harness was updated since it started (${was || "its version was not kept"})` : "its declaration changed since it started"}`);
+      const harness = term.program === undefined || programChanged(term.program, (await harnessEnv()).PATH);
+      const was = programFile(harness ? term.program : term.nodeBin);
+      console.log(`restarting the terminal of ${key}: ${why === "update" ? `its ${harness ? "harness" : "node"} was updated since it started (${was || "its version was not kept"})` : "its declaration changed since it started"}`);
       stopTerminal(term, true);
       await whenClosed(term);
       if (!terminalOf(term.ref) && (await runsInTui(await agentDecl(ctx, term.ref), term.ref))) await startTui(ctx, term.ref);

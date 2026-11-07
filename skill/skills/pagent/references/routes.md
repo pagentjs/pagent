@@ -1,5 +1,5 @@
 ---
-description: The app's public face - api/**/route.ts (typed or raw handlers), keys and caller, tell() from server code, strangers, /mcp, an agent's message route (inbox), remote agents of other apps, one-off messages to another app.
+description: The app's public face - api/**/route.ts (typed or raw handlers), keys and caller, tell() from server code, strangers, /mcp, an agent's message route (inbox), remote agents of other apps, one-off messages to another app, a session on this computer telling an agent (pagent tell --as).
 ---
 
 # Routes: the app's public face
@@ -13,6 +13,7 @@ description: The app's public face - api/**/route.ts (typed or raw handlers), ke
 - [An agent's message route](#an-agents-message-route)
 - [Remote agents](#remote-agents)
 - [A one-off message to another app](#a-one-off-message-to-another-app)
+- [From a session on this computer](#from-a-session-on-this-computer)
 
 ## Routes
 
@@ -151,3 +152,13 @@ your own message route (the engine fills it in). With no key of theirs you are a
 answer comes back at once. If their own route lets you in, its reply reaches you as a message ("The reply to your
 message <id>") **only if your own message route is open**; else use `--wait` (up to 100 s). A reply is never answered
 automatically, so two apps do not talk forever: to go on, tell again.
+
+## From a session on this computer
+
+A session outside any app on the same computer (a terminal, another harness's agent) tells an app's agent with the
+person's `pagent`, by a name it gives itself: `pagent tell /ops#ops "…" --as openarea [--root <app-root>]` (the app:
+--root, or the running one its folder is in). The agent reads "(from local:openarea) …": the person's own machine, so
+taken as their words are. With `--wait` the reply is printed (up to 100 s); without, it is a notice (", no reply"):
+the session has no address a later reply could go to. No key: it is the person's own plane, as `pagent stop` is.
+Whom it can tell: `pagent agents` (each agent, busy or not), `pagent tree` (the pages): the app at --root, the one
+its folder is in, or every running app.

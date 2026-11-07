@@ -162,6 +162,15 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-crumbs a:hover { color: var(--pagent-text); }
 .pagent-crumbs [aria-current="page"] { font-weight: 500; color: var(--pagent-text); overflow: hidden; text-overflow: ellipsis; }
 .pagent-crumb-dir { color: var(--pagent-faint); }
+/* A phone: buttons a finger can hit (the bar is 44px), and of the path only where it goes back to and where it is. */
+@media (hover: none) {
+  .pagent-top .pagent-icon { width: 40px; height: 40px; }
+  .pagent-crumbs a { display: inline-block; padding: 10px 0; }
+}
+@media (max-width: 760px) {
+  .pagent-crumbs li:not(:nth-last-child(-n + 2)) { display: none; }
+  .pagent-crumbs li:nth-last-child(2)::before { display: none; }
+}
 
 .pagent-rail {
   position: sticky; top: 0; z-index: 20;
@@ -345,6 +354,7 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-text li::marker { color: var(--pagent-faint); }
 .pagent-text h1, .pagent-text h2, .pagent-text h3, .pagent-text h4, .pagent-text h5, .pagent-text h6 { font-size: 16px; font-weight: 600; line-height: 1.45; margin: 18px 0 6px; }
 .pagent-text code { font-size: 0.86em; background: var(--pagent-surface-2); border-radius: 4px; padding: 1px 5px; }
+.pagent-text :not(pre) > code { white-space: pre-wrap; overflow-wrap: anywhere; } /* a long command in a sentence wraps */
 .pagent-text pre { background: var(--pagent-surface-2); border-radius: 8px; padding: 10px 12px; overflow: auto; font-size: 12.5px; line-height: 1.55; }
 .pagent-text pre code { background: none; padding: 0; font-size: inherit; }
 /* An image in an agent's markdown: the app's own, as wide as the text; another site's is a link to it (chat.tsx). */
@@ -360,7 +370,9 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-reasoning { font-size: 13px; color: var(--pagent-muted); margin-bottom: 6px; }
 .pagent-reasoning summary { cursor: pointer; }
 .pagent-reasoning > div { white-space: pre-wrap; padding: 4px 0 0 12px; border-left: 1px solid var(--pagent-border); margin-left: 5px; }
-.pagent-origin { font-size: 12px; color: var(--pagent-faint); margin-bottom: 2px; }
+/* Where a message came from: a trigger's address has no place to break, so it breaks anywhere (it had pushed the
+   conversation wider than a phone, which then scrolled sideways and cut off the start of every reply). */
+.pagent-origin { font-size: 12px; color: var(--pagent-faint); margin-bottom: 2px; overflow-wrap: anywhere; }
 /* Turns between agents (and the engine's notices), folded into one quiet line: who with, how many, a glimpse */
 .pagent-chatter { align-self: stretch; min-width: 0; }
 .pagent-chatter > summary {
@@ -372,8 +384,8 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-chatter > summary:hover { background: var(--pagent-surface-2); color: var(--pagent-text); }
 .pagent-chevron { flex: none; opacity: 0.7; transition: transform 150ms var(--pagent-ease); }
 details[open] > summary > .pagent-chevron { transform: rotate(90deg); }
-.pagent-chatter-who { flex: none; font-weight: 500; color: var(--pagent-text); }
-.pagent-chatter-count { flex: none; color: var(--pagent-faint); }
+.pagent-chatter-who { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; font-weight: 500; color: var(--pagent-text); } /* many names: they wrap */
+.pagent-chatter-count { flex: none; white-space: nowrap; color: var(--pagent-faint); }
 .pagent-chatter-count::before, .pagent-chatter-glimpse::before { content: "·"; margin-right: 8px; color: var(--pagent-faint); }
 .pagent-chatter-glimpse { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pagent-chatter-body {
@@ -565,7 +577,9 @@ summary.pagent-compaction-line:hover { color: var(--pagent-muted); }
 }
 .pagent-console-head strong { font-weight: 600; }
 .pagent-console-head .pagent-muted { color: var(--pagent-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pagent-console-log { flex: 1; overflow: auto; padding: 20px var(--pagent-gutter); display: flex; flex-direction: column; gap: 18px; }
+/* It scrolls up and down only (a code block scrolls sideways itself), and at its ends the scroll stays in it: on a
+   phone the page around it bounced, the input with it. */
+.pagent-console-log { flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding: 20px var(--pagent-gutter); display: flex; flex-direction: column; gap: 18px; }
 .pagent-console-input { padding: 8px var(--pagent-gutter) 16px; }
 /* What a page shows under a turn (turnFooter): its own size, close to the turn it is about. */
 .pagent-turn-footer { flex: none; min-width: 0; margin-top: -8px; }
@@ -574,8 +588,11 @@ summary.pagent-compaction-line:hover { color: var(--pagent-muted); }
 .pagent-console-inline .pagent-console-head { border-bottom: 0; padding-top: 4px; padding-bottom: 0; }
 .pagent-console-inline .pagent-console-input { padding-bottom: 0; }
 .pagent-console-empty { margin: auto; padding: 0 16px 10vh; text-align: center; color: var(--pagent-muted); font-size: var(--pagent-message-size); max-width: 420px; }
+.pagent-earlier { display: flex; justify-content: center; }
+.pagent-earlier button { font-size: 12px; color: var(--pagent-muted); margin: 4px 0 8px; }
 .pagent-console-empty strong { display: block; color: var(--pagent-text); font-size: 18px; font-weight: 600; margin-bottom: 6px; }
 .pagent-resume, .pagent-stop { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; white-space: nowrap; }
+@media (hover: none) { .pagent-resume { display: none; } } /* a command to paste in a terminal: not on a phone */
 /* Messages written while the agent works, sent once it is done */
 .pagent-console-note { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 10px; font-size: 13px; color: var(--pagent-muted); background: var(--pagent-surface-2); border-radius: var(--pagent-radius); }
 .pagent-console-note > span { flex: 1; min-width: 0; }

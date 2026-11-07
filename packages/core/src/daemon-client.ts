@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, openSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { engine } from "./engine.ts";
+import { nodeBin } from "./program.ts";
 import { daemonPaths, DAEMON_VERSION, type ProcInfo, type SpawnRequest, type TermStatus } from "./daemon-protocol.ts";
 
 export type { ProcInfo, TermStatus };
@@ -94,7 +95,7 @@ async function open(): Promise<Connection> {
     mkdirSync(paths.home, { recursive: true });
     const out = openSync(paths.log, "a");
     const script = engine.core("daemon");
-    spawn(process.execPath, [script], { detached: true, stdio: ["ignore", out, out], env: process.env }).unref();
+    spawn(nodeBin(), [script], { detached: true, stdio: ["ignore", out, out], env: process.env }).unref();
     for (let i = 0; i < 100 && !socket; i++) {
       await new Promise((r) => setTimeout(r, 50));
       socket = await tryConnect(paths.socket);

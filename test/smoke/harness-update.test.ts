@@ -36,9 +36,11 @@ describe("a harness updated while its agents run", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-update-"));
   const tui = program(dir, "faketui");
   const svc = program(dir, "fakeservice");
+  const node = program(dir, "fakenode");
   const ask = (node: string, message: string) => app.post<{ text: string }>("/_pagent/ask", { node, agent: "bot", message }).then((r) => r.text);
   const status = (node: string) => app.get(`/_pagent/agent-status?node=${node}&agent=bot`);
   const logged = (re: RegExp) => app.log().split("\n").filter((l) => re.test(l));
+  const pid = async () => Number(await ask("/tui", "!sh echo $PPID")); // the TUI the turn runs in
 
   before(async () => {
     app = await testApp(
@@ -46,7 +48,7 @@ describe("a harness updated while its agents run", () => {
         "tui/page.tsx": page({ bot: { runner: fakeTuiRunner, bin: tui.link } }),
         "thread/page.tsx": page({ bot: { runner: fakeThreadRunner } }),
       },
-      { env: { FAKE_SERVICE_BIN: svc.link, PAGENT_SWEEP_MS: "500", PAGENT_TUI_REFRESH_MS: "1000" } },
+      { env: { FAKE_SERVICE_BIN: svc.link, PAGENT_NODE_BIN: node.link, PAGENT_SWEEP_MS: "500", PAGENT_TUI_REFRESH_MS: "1000" } },
     );
   });
   after(async () => {
@@ -55,7 +57,6 @@ describe("a harness updated while its agents run", () => {
   });
 
   test("a TUI on the older version: stale, left alone while someone is in it, then restarted on its session by itself", async () => {
-    const pid = async () => Number(await ask("/tui", "!sh echo $PPID")); // the TUI the turn runs in
     const first = await pid();
     assert.equal((await status("/tui")).terminal.stale, undefined);
 
@@ -74,6 +75,24 @@ describe("a harness updated while its agents run", () => {
     const second = await pid();
     assert.notEqual(second, first);
     assert.equal(logged(/restarting the terminal of \/tui#bot/).length, 1, "restarted once");
+  });
+
+  test("a TUI whose node is not the current one (its hooks and its `pagent` run with it): restarted too", async () => {
+    const first = await pid();
+    node.update();
+    await until(() => logged(/^restarting the terminal of \/tui#bot: its node was updated since it started \(.*\/v1\/fakenode\)$/).length, "the restart");
+    await until(async () => (await status("/tui")).terminal.open && (await status("/tui")).terminal.stale === undefined, "the new TUI");
+    assert.notEqual(await pid(), first);
+  });
+
+  test("a server restarted: it takes its TUI back at the agent's address (the node program is kept beside it, not in its place)", async () => {
+    const first = await pid();
+    await app.kill();
+    await app.start();
+    await until(() => logged(/^terminal of \/tui#bot still running \(pid \d+\)$/).length, "the TUI taken back");
+    assert.equal((await status("/tui")).terminal.open, true);
+    assert.equal(await pid(), first, "the same TUI, not a second one on its session");
+    assert.equal(logged(/^terminal of [^/]/).length + logged(/^terminal of \/\S*\t/).length, 0, "no terminal at another address");
   });
 
   test("a session on the older service: moved to the new version's service; the old one stopped once nobody uses it", async () => {

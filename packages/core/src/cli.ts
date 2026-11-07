@@ -51,18 +51,74 @@ function agentCommand(argv: string[]) {
   req.end(JSON.stringify({ argv, cwd: process.cwd() }));
 }
 
-/** The server running the app at `root`, as the daemon knows it (exits saying so when there is none). */
-async function runningApp(root: string): Promise<{ root: string; port: number }> {
+type RunningApp = { root: string; port: number };
+
+/** The apps the daemon knows to be running (their servers). */
+async function runningApps(): Promise<RunningApp[]> {
   const { existingDaemon } = await import("./daemon-client.ts");
   const conn = await existingDaemon();
-  const apps = conn ? (await conn.request<{ apps: { root: string; port: number }[] }>("status")).apps : [];
+  const apps = conn ? (await conn.request<{ apps: RunningApp[] }>("status")).apps : [];
   conn?.end();
-  const app = apps.find((a) => a.root === root);
+  return apps;
+}
+
+/** The running app this folder is in (the innermost), if any. */
+const appHere = (apps: RunningApp[]) => {
+  const here = process.cwd();
+  return apps.filter((a) => here === a.root || here.startsWith(a.root.endsWith("/") ? a.root : `${a.root}/`)).sort((x, y) => y.root.length - x.root.length)[0];
+};
+
+/**
+ * The server running the app at `root`, as the daemon knows it (exits saying so when there is none). No root: the
+ * running app this folder is in, or, outside them all, an error that lists them.
+ */
+async function runningApp(root?: string): Promise<RunningApp> {
+  const apps = await runningApps();
+  const app = root ? apps.find((a) => a.root === root) : appHere(apps);
   if (!app) {
-    console.error(`pagent: no server is running the app at ${root} (--root <app-root>)`);
+    const list = apps.length ? `; running: ${apps.map((a) => a.root).join(", ")}` : "; none is running";
+    console.error(root ? `pagent: no server is running the app at ${root} (--root <app-root>)${list}` : `pagent: this folder is in no running app: --root <app-root>${list}`);
     process.exit(1);
   }
   return app;
+}
+
+type Listed = { path: string; url?: string; title?: string; route: boolean; agents: { address: string; runner: string; busy: boolean; activity?: string | null; quiet?: string; stuck?: boolean; remote?: string; offline?: string }[] };
+
+// Columns as a terminal shows them: CJK and other wide characters take two cells.
+const cells = (t: string) => [...t].reduce((n, ch) => n + (/[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]|[\u{1f300}-\u{1faff}\u{20000}-\u{3fffd}]/u.test(ch) ? 2 : 1), 0);
+const pad = (t: string, w: number) => t + " ".repeat(Math.max(0, w - cells(t)));
+
+/** `pagent agents` / `pagent tree` for a person: the app at --root, the one this folder is in, or every running one. */
+async function printApps(what: "agents" | "tree", root?: string) {
+  const apps = root ? [await runningApp(root)] : ((h) => (h ? [h] : null))(appHere(await runningApps())) ?? (await runningApps());
+  if (!apps.length) {
+    console.error("pagent: no app is running");
+    process.exit(1);
+  }
+  const state = (a: Listed["agents"][number]) =>
+    a.offline ? "offline" : a.busy ? `busy${a.quiet ? `, quiet ${a.quiet}` : ""}${a.activity ? `: ${a.activity}` : ""}${a.stuck ? " (may be stuck)" : ""}` : "idle";
+  for (const [i, app] of apps.entries()) {
+    const res = await fetch(`http://127.0.0.1:${app.port}/_pagent/directory`).catch(() => null);
+    const body = res?.ok ? ((await res.json()) as { nodes: Listed[] }) : null;
+    if (i) console.log("");
+    if (!body) {
+      console.log(`${app.root} (port ${app.port}): did not answer${res ? ` (${res.status}; a server from before this pagent?)` : ""}`);
+      continue;
+    }
+    const top = body.nodes.find((n) => n.path === "/")?.title;
+    console.log(`${top ? `${top} · ` : ""}${app.root} (http://127.0.0.1:${app.port})`);
+    if (what === "agents") {
+      const rows = body.nodes.flatMap((n) => n.agents.map((a) => [a.address, a.remote ? `remote ${a.remote}` : a.runner.startsWith(`${app.root}/`) ? a.runner.slice(app.root.length + 1) : a.runner, state(a), n.title ?? ""]));
+      if (!rows.length) console.log("  (no agents)");
+      const w = [0, 1].map((c) => Math.max(...rows.map((r) => cells(r[c]))));
+      for (const r of rows) console.log(`  ${pad(r[0], w[0])}  ${pad(r[1], w[1])}  ${r[2]}${r[3] ? `  · ${r[3]}` : ""}`);
+    } else {
+      const rows = body.nodes.map((n) => [n.url ?? n.path, n.title ?? "", [n.route ? "" : "(no page)", ...n.agents.map((a) => a.address.slice(a.address.indexOf("#")))].filter(Boolean).join(" ")]);
+      const w = [0, 1].map((c) => Math.max(...rows.map((r) => cells(r[c]))));
+      for (const r of rows) console.log(`  ${pad(r[0], w[0])}  ${pad(r[1], w[1])}  ${r[2]}`.trimEnd());
+    }
+  }
 }
 
 const usage = () => {
@@ -72,10 +128,13 @@ const usage = () => {
       '       pagent add --app "<Mac app>" [--path /x] [--root …]   a new bridge for an app that has none\n' +
       "       pagent add                                            list the bridges\n" +
       "       pagent daemon status|stop|restart\n" +
+      "       pagent agents | tree [--root <app-root>]                the apps' agents (busy or not) / pages; every running app's outside one\n" +
+      '       pagent tell <node>[#agent] "<message>" --as <name> [--root …] [--wait]  from a session on this computer, as local:<name>\n' +
       "       pagent stop <node>#<agent> [--root <app-root>]           stop that agent's turn in progress (as Esc in its TUI)\n" +
       "       pagent mv <node> <new path> [--root <app-root>]          move a node with its data, state, sessions and references\n" +
       "       pagent key create <node> [--name n] [--ttl 1h] [--root …]  a key to the app's routes under <node> (shown once)\n" +
       "       pagent key list | revoke <name> [--root …]\n" +
+      "       pagent grokbot login <name> | add <name> | list | remove <name>   Grok Bot accounts (the next with usage left takes a turn)\n" +
       "       pagent docs [topic[#section]]                            the pagent skill's chapters, as agents read them\n" +
       "An app's agents have more commands (`pagent --help` in an agent's shell).",
   );
@@ -134,6 +193,41 @@ if (env("TOKEN")) {
     console.error(`pagent key ${arg}: ${(e as Error).message}`);
     process.exit(1);
   }
+} else if (command === "grokbot" && ["login", "add", "list", "remove"].includes(arg)) {
+  // Grok Bot accounts (runners/src/lib/grokbot-accounts.ts, SPEC 13.28): each one the Cursor CLI's login, kept in the
+  // keychain. login: sign the CLI in to it now (in the browser), then keep that; add: keep the CLI's login as it is.
+  const g = await import("../../runners/src/lib/grokbot-accounts.ts");
+  const { appVersion } = await import("../../runners/src/lib/gbot.ts");
+  const name = rest[0];
+  try {
+    if (arg === "login" || arg === "add") {
+      if (!name) throw new Error(`which account? pagent grokbot ${arg} <name> (a short name of yours for it: work, second …)`);
+      if (arg === "login") {
+        const { spawnSync } = await import("node:child_process");
+        console.log(`signing the Cursor CLI in: pick the account "${name}" is, in the browser`);
+        const r = spawnSync("cursor-agent", ["login"], { stdio: "inherit" });
+        if (r.error || r.status !== 0) throw new Error(r.error ? `cursor-agent: ${r.error.message} (install the Cursor CLI)` : `cursor-agent login ended with ${r.status}`);
+      }
+      const a = g.addAccount(name, g.cliToken());
+      const u = await g.readUsage(g.tokenOf(name), appVersion()).catch((e: Error) => e);
+      console.log(`kept the account "${name}"${a.expiresAt ? `; its login works until ${g.when(a.expiresAt)}` : ""}${u instanceof Error ? `; its usage: ${u.message}` : `; this week ${u.percent}% used${u.resetAt ? `, starts again ${g.when(u.resetAt)}` : ""}`}`);
+      console.log(`accounts, in the order they take turns: ${g.accounts().map((x) => x.name).join(", ")}`);
+    } else if (arg === "list") {
+      const list = g.accounts();
+      if (!list.length) console.log("no Grok Bot accounts: turns go to whichever the Grok Bot app is on (pagent grokbot login <name> adds one)");
+      for (const a of list) {
+        const token = g.tokenOf(a.name);
+        const u = token ? await g.readUsage(token, appVersion()).catch((e: Error) => e) : new Error("no login kept");
+        console.log(`${a.name.padEnd(12)} ${u instanceof Error ? u.message : `${String(u.percent).padStart(3)}% used${u.resetAt ? `, starts again ${g.when(u.resetAt)}` : ""}`}${a.expiresAt ? `  (login until ${g.when(a.expiresAt)})` : ""}`);
+      }
+    } else {
+      if (!name || !g.removeAccount(name)) throw new Error(`no account "${name ?? ""}" (pagent grokbot list)`);
+      console.log(`removed "${name}" and its login`);
+    }
+  } catch (e) {
+    console.error(`pagent grokbot ${arg}: ${(e as Error).message}`);
+    process.exit(1);
+  }
 } else if (command === "serve" && arg) {
   const flags = parse(rest);
   const port = Number(flagValue(flags, "port") ?? 4870);
@@ -148,6 +242,35 @@ if (env("TOKEN")) {
   }
   const { startServer } = await import("./server.ts");
   startServer({ root: resolve(arg), port, host });
+} else if (command === "tell" && arg) {
+  // A session on this computer outside the app (a terminal, another harness's agent) telling one of its agents, by the
+  // name it gives (--as): "(from local:<name>)". The app is --root, or the running one this folder is in.
+  const a = parse(rest, { wait: "bool", interject: "bool" });
+  const message = a.pos.join(" ");
+  const name = flagValue(a, "as");
+  if (!message || !name) {
+    console.error('usage: pagent tell <node>[#agent] "<message>" --as <who you are> [--root <app-root>] [--wait] [--interject]');
+    process.exit(2);
+  }
+  const app = await runningApp(flagValue(a, "root") ? resolve(flagValue(a, "root")!) : undefined);
+  const wait = a.flags.wait === true;
+  const res = await fetch(`http://127.0.0.1:${app.port}/_pagent/local-tell`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ as: name, to: arg, message, ...(wait ? { wait: true } : {}), ...(a.flags.interject === true ? { interject: true } : {}) }),
+    signal: AbortSignal.timeout(130_000),
+  });
+  const r = (await res.json().catch(() => ({}))) as { to?: string; id?: string; reply?: string; error?: string };
+  if (!res.ok) {
+    console.error(`pagent tell: ${r.error ?? res.statusText}`);
+    process.exit(1);
+  }
+  if (r.reply !== undefined) console.log(r.reply);
+  else if (wait) console.log(`Told ${r.to} (message ${r.id}); it did not answer within 100 s, and its reply will not come back here (it is in its conversation).`);
+  else console.log(`Told ${r.to} (message ${r.id}); no reply comes back (--wait waits for one, up to 100 s).`);
+} else if (command === "agents" || command === "tree") {
+  // What an agent's `pagent agents` / `pagent tree` show, for a session outside the apps: whom `pagent tell --as` reaches.
+  await printApps(command, flagValue(parse(process.argv.slice(3)), "root") ? resolve(flagValue(parse(process.argv.slice(3)), "root")!) : undefined);
 } else if (command === "stop" && arg?.includes("#")) {
   // The app's own control plane (POST /_pagent/stop), on the server the daemon knows for that app.
   const app = await runningApp(resolve(flagValue(parse(rest), "root") ?? "."));

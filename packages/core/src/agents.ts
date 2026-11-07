@@ -16,6 +16,6 @@ export { interactiveCommand, restartTerminal, tuiStale } from "./agents/tui.ts";
 export { agentStatus, harnessOfAgent, residency } from "./agents/status.ts";
 export { lookAt, remoteAt } from "./agents/remote.ts";
 export { attachmentsOf, saveAttachments, uploadFile } from "./agents/attachments.ts";
-export { history, lastLine, type LastWords, lastWords, sessionHandle, untilRun, usageOf } from "./agents/history.ts";
+export { history, lastLine, type LastWords, lastWords, sessionHandle, toolCallOf, untilRun, usageOf, viewMessage, viewPart } from "./agents/history.ts";
 export { listed, trajectory, trajectoryPage, trajectoryRecord, type TrajectoryRecord } from "./agents/trajectory.ts";
 export { recordWaits, type Wait, waitsOf } from "./agents/waits.ts";

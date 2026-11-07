@@ -11,6 +11,8 @@ test("the line each caller makes", () => {
   assert.equal(callerLine({ kind: "trigger", node: "/ops", name: "sweep" }, "check"), "(from trigger:/ops#sweep) check");
   assert.equal(callerLine({ kind: "pagent" }, "The user answered"), "(from pagent) The user answered");
   assert.equal(callerLine(via({ kind: "agent", node: "/a", agent: "a" }, "/api/b/message"), "hello"), "(from /a#a via /api/b/message) hello");
+  assert.equal(callerLine({ kind: "agent", node: "/", agent: "main", noReply: true }, "done"), "(from /#main, no reply) done");
+  assert.equal(callerLine({ kind: "local", name: "openarea", noReply: true }, "fyi"), "(from local:openarea, no reply) fyi");
 });
 
 test("from outside: the sender's address, and its words as data, with where they came from and the key they came with", () => {
@@ -33,8 +35,12 @@ test("read back: every caller, with its via, and the message as it was given", (
     { kind: "page", path: "/" },
     { kind: "page", path: "/a/b" },
     { kind: "agent", node: "/x", agent: "y", via: ["/api/x/message"] },
+    { kind: "agent", node: "/x", agent: "y", noReply: true },
+    { kind: "agent", node: "/x", agent: "y", noReply: true, via: ["/x:send"] },
     { kind: "trigger", node: "/", name: "digest" },
     { kind: "pagent" },
+    { kind: "local", name: "openarea" },
+    { kind: "local", name: "w3.p2", noReply: true },
     { kind: "external", ip: "10.0.0.2", from: "https://h.example/api/message", key: { name: "h.example", scope: "/" }, via: ["/api/message", "/inbox:receive"] },
     { kind: "external", ip: "", from: "http://h:1/api/message", inReplyTo: "3f2a" },
     { kind: "external", ip: "10.0.0.9" },

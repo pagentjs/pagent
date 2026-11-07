@@ -9,8 +9,10 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import { sendByLogin } from "../../packages/runners/src/lib/gbot.ts";
 import { fakePage, lines, repo, testApp, until, type TestApp } from "../lib/app.ts";
 
 const fakeGbot = join(repo, "test/lib/fake-gbot.ts");
@@ -231,6 +233,103 @@ describe("runner:grokbot's session", () => {
     const e = await s.next((e) => e.type === "failed");
     assert.match(e.errorText, /^Grok Bot app has no live session: relaunch it while its computer is awake \(`osascript -e 'tell application "Grok Bot" to quit' && open -a "Grok Bot"`\)/);
     await s.done;
+  });
+
+  test("its computer refuses gbot's message (Grok Bot 0.78): sent as the app sends it, through Cursor's backend with the Cursor login, and the turn goes on", async () => {
+    const d = fresh("no-send", "no-send");
+    // Cursor's backend, as far as the runner uses it: the message goes to the bot (the stand-in's own send, envelope and all).
+    const got: { auth?: string; version?: string; body: any }[] = [];
+    const backend = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c)).on("end", () => {
+        const body = JSON.parse(raw);
+        got.push({ auth: req.headers.authorization, version: req.headers["x-cursor-client-version"] as string, body });
+        const [, corr, text] = /^\[gbot msg=\S+ corr=(\S+) hop=0 from=[^\]]*\]\n([\s\S]*)$/.exec(body.text) ?? [];
+        const r = spawnSync(process.execPath, [fakeGbot, "send", body.agentId, "--json", "--correlation-id", corr, "--", text], { env: { ...process.env, FAKE_GBOT_DIR: join(d, "gbot"), FAKE_GBOT_BACKEND: "1" } });
+        res.writeHead(r.status === 0 ? 200 : 500, { "content-type": "application/json" });
+        res.end(JSON.stringify(r.status === 0 ? { dispatched: true, delivery: "GROK_BOT_USER_MESSAGE_DELIVERY_ACCEPTED_TEMPORAL" } : { code: "internal", message: String(r.stdout) }));
+      });
+    });
+    await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(backend.address() as { port: number }).port}`;
+    try {
+      const s = session(d, { bot: "Researcher" }, { CURSOR_ACCESS_TOKEN: "test-token", SAND_CLIENT_VERSION: "0.78.4", GROKBOT_BACKEND_URL: url });
+      await s.next((e) => e.type === "ready");
+      s.write({ op: "ask", run: "r1", message: "!say sent the app's way" });
+      const end = await s.next((e) => e.type === "ask-failed" || e.type === "turn-end");
+      assert.equal(end.text, "sent the app's way", end.errorText);
+      assert.equal(got.length, 1);
+      assert.equal(got[0].auth, "Bearer test-token");
+      assert.equal(got[0].version, "0.78.4");
+      assert.equal(got[0].body.agentId, "bot-researcher");
+      s.write({ op: "stop" });
+      await s.done;
+      // No Cursor login: nothing is sent, and it says what to do.
+      const was = { bin: process.env.GBOT_BIN, token: process.env.CURSOR_ACCESS_TOKEN, url: process.env.GROKBOT_BACKEND_URL };
+      Object.assign(process.env, { GBOT_BIN: fakeGbot, CURSOR_ACCESS_TOKEN: "", GROKBOT_BACKEND_URL: url });
+      try {
+        await assert.rejects(sendByLogin("bot-researcher", "hi", "c1"), /there is no Cursor login to send it the way the Grok Bot app does: sign in to Cursor/);
+      } finally {
+        for (const [k, v] of Object.entries({ GBOT_BIN: was.bin, CURSOR_ACCESS_TOKEN: was.token, GROKBOT_BACKEND_URL: was.url })) v === undefined ? delete process.env[k] : (process.env[k] = v);
+      }
+      assert.equal(got.length, 1, "nothing sent without a login");
+    } finally {
+      backend.close();
+    }
+  });
+
+  test("pagent's own accounts: a turn goes to the first with usage left, its bot made there by name and told its workspace; used up, the next one; none, it says when", async () => {
+    const d = fresh("accounts");
+    const home = join(d, "pagent-home");
+    mkdirSync(join(home, "grokbot"), { recursive: true });
+    writeFileSync(join(home, "grokbot", "accounts.json"), JSON.stringify({ accounts: [{ name: "one", addedAt: 1 }, { name: "two", addedAt: 2 }] }));
+    writeFileSync(join(d, "tokens.json"), JSON.stringify({ one: "t1", two: "t2" }));
+    const usage: Record<string, number> = { t1: 30, t2: 0 };
+    const sent: { token: string; text: string }[] = [];
+    // Cursor's backend: each login's usage, and a message sent to that login's account.
+    const backend = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c)).on("end", () => {
+        const token = String(req.headers.authorization).replace(/^Bearer /, "");
+        res.writeHead(200, { "content-type": "application/json" });
+        if (req.url!.endsWith("/GetSandUsageStatus")) return res.end(JSON.stringify({ usagePercent: usage[token], nextResetTimestampUtc: "2026-11-07T11:36:01.980Z" }));
+        const body = JSON.parse(raw);
+        sent.push({ token, text: body.text });
+        const [, corr, text] = /^\[gbot msg=\S+ corr=(\S+) hop=0 from=[^\]]*\]\n([\s\S]*)$/.exec(body.text) ?? [];
+        spawnSync(process.execPath, [fakeGbot, "send", body.agentId, "--json", "--correlation-id", corr, "--", text.split("\n").at(-1)!], { env: { ...process.env, FAKE_GBOT_DIR: join(d, "gbot"), FAKE_GBOT_ACCOUNTS: "1", CURSOR_ACCESS_TOKEN: token, SAND_CLIENT_VERSION: "0.78.4", HOME: d } });
+        res.end(JSON.stringify({ dispatched: true, delivery: "GROK_BOT_USER_MESSAGE_DELIVERY_ACCEPTED_TEMPORAL" }));
+      });
+    });
+    await new Promise<void>((r) => backend.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(backend.address() as { port: number }).port}`;
+    const env = { PAGENT_HOME: home, GROKBOT_TOKENS_FILE: join(d, "tokens.json"), GROKBOT_BACKEND_URL: url, GROKBOT_USAGE_FRESH_MS: "1", FAKE_GBOT_ACCOUNTS: "1", SAND_CLIENT_VERSION: "0.78.4", HOME: d };
+    const turn = async (s: Events, run: string, text: string) => {
+      s.write({ op: "ask", run, message: `!say ${text}` });
+      return s.next((e) => (e.type === "ask-failed" || e.type === "turn-end") && (e.run === run || e.turnId === run));
+    };
+    try {
+      const s = session(d, { bot: "Scout", workspace: "~/ws/scout" }, { ...env, PAGENT_APP_ROOT: d });
+      await s.next((e) => e.type === "ready");
+      assert.equal((await turn(s, "r1", "on one")).text, "on one");
+      assert.equal(sent[0].token, "t1");
+      assert.match(sent[0].text, new RegExp(`Your workspace is the folder ${join(d, "ws", "scout").replace(/[/.]/g, "\\$&")} on this computer: read its README\\.md first`), "a bot made now is told its workspace, ahead of the message");
+      assert.equal((await turn(s, "r2", "again on one")).text, "again on one");
+      assert.doesNotMatch(sent[1].text, /workspace/, "once");
+      // One's week is used up: the next turn goes to two, where the bot is made and told again.
+      usage.t1 = 100;
+      assert.equal((await turn(s, "r3", "on two")).text, "on two");
+      assert.equal(sent[2].token, "t2");
+      assert.match(sent[2].text, /Your workspace is the folder/);
+      assert.match(s.log(), /grokbot: Scout goes on on account two \(one: this week's usage is used up\)/);
+      // Both used up: the turn says so, and when.
+      usage.t2 = 100;
+      assert.match((await turn(s, "r4", "nowhere")).errorText, /^Grok Bot: no Grok Bot account can take a turn now \(one: this week's usage is used up, back 11-0\d \d\d:36; two: this week's usage is used up, back/);
+      assert.equal(sent.length, 3);
+      s.write({ op: "stop" });
+      await s.done;
+    } finally {
+      backend.close();
+    }
   });
 
   test("an unpatched gbot and the app's descriptor v3: it says so, and how to update", async () => {

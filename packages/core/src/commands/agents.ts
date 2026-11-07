@@ -84,13 +84,13 @@ export const agentsCommand: Command = {
 
 export const tellCommand: Command = {
   name: "tell",
-  usage: "<agent | .. | URL> <message> [--wait[=seconds]] [--interject] [--new]",
-  about: "Message another agent: of this app (an address from `pagent agents`, e.g. /ops#ops), the nearest one above you (..: the agent whose part of the app yours is in, to hand something up), or of another app (its message route, e.g. http://192.168.0.50:4880/api/message). It delegates: the reply comes to you later as a message. --wait: wait for the reply (up to 100 s; after that it comes as a message). --interject: if it is in a turn, into that turn (it reads it between two steps), not after it. --new: the agent of a new instance of a dynamic page, made now (pagent tell --new /studio/demo/fix-login \"…\"); without it, an instance that is not there is an error that lists the ones there are.",
+  usage: "<agent | .. | URL> <message> [--wait[=seconds]] [--interject] [--new] [--no-reply]",
+  about: "Message another agent: of this app (an address from `pagent agents`, e.g. /ops#ops), the nearest one above you (..: the agent whose part of the app yours is in, to hand something up), or of another app (its message route, e.g. http://192.168.0.50:4880/api/message). It delegates: the reply comes to you later as a message. --wait: wait for the reply (up to 100 s; after that it comes as a message). --interject: if it is in a turn, into that turn (it reads it between two steps), not after it. --new: the agent of a new instance of a dynamic page, made now (pagent tell --new /studio/demo/fix-login \"…\"); without it, an instance that is not there is an error that lists the ones there are. --no-reply: a notice or a receipt, nothing to answer: what it says back goes to no one (it is told so), so it does not wake you.",
   more:
     "Another app's agent you talk to more than once: declare it as a remote agent of this app (a node whose page has agents = { sam: { remote: \"http://sam-mac:4870/dev\", key: \"SAM_KEY\" } }, the other app's node address, and the name of the variable in the app's .env holding the key that app gave you), then tell it as any agent here (pagent tell /sam): its reply comes back to you as a result, with no inbox of yours to open. " +
     "To another app by URL you have no key of theirs, so you are a stranger there: its agent answers briefly, without tools, and that answer comes back here at once. " +
     "To an agent of this app whose message route the app wrote, the message goes through that route, which decides what happens to it.",
-  flags: { wait: "bool", interject: "bool", new: "bool" },
+  flags: { wait: "bool", interject: "bool", new: "bool", "no-reply": "bool" },
   // The same tell() as server code's (tell.ts), for this agent: the reply comes back to it.
   run: async ({ ctx, me }, a) => {
     const [to, ...words] = a.pos;
@@ -98,9 +98,12 @@ export const tellCommand: Command = {
     if (!to || !message) throw new Error("what should it do? usage: pagent tell <agent | .. | URL> <message>");
     const wait = a.flags.wait === undefined ? undefined : a.flags.wait === true ? true : Number(a.flags.wait) || 0;
     const made = a.flags.new !== undefined;
-    const opts = { interject: a.flags.interject !== undefined, ...(wait ? { wait } : {}), ...(made ? { new: true } : {}) };
+    const noReply = a.flags["no-reply"] !== undefined;
+    if (noReply && wait !== undefined) throw new Error("--wait is for the reply, and --no-reply asks for none");
+    const opts = { interject: a.flags.interject !== undefined, ...(wait ? { wait } : {}), ...(made ? { new: true } : {}), ...(noReply ? { noReply: true } : {}) };
     const caller = { kind: "agent" as const, ...me };
     if (isUrl(to)) {
+      if (noReply) throw new Error("--no-reply is for this app's agents: another app's agent replies to your message route, which decides what to do with it");
       const r = await tell(ctx, { caller }, to, message, opts);
       if (r.reply !== undefined) return r.reply;
       const id = r.id ? ` (its message ${r.id})` : "";
@@ -111,12 +114,16 @@ export const tellCommand: Command = {
     }
     const address = to === ".." ? keyOf(await agentAbove(ctx, me)) : to;
     const route = messageRoute(ctx.root, normPath(address.split("#")[0] || "/"));
-    if (route) return throughRoute(ctx, me, route, message, opts);
+    if (route) {
+      if (noReply) throw new Error(`--no-reply: ${address} has a message route of the app's, which decides what happens to a message and its reply`);
+      return throughRoute(ctx, me, route, message, opts);
+    }
     const target = await agentArg(ctx, address, made);
     if (keyOf(target) === keyOf(me)) throw new Error("that is you");
     if (wait !== undefined && inChain(me, target)) return `${keyOf(target)} is waiting on you already: tell it without --wait (delegate) instead.`;
     const r = await tell(ctx, { caller }, keyOf(target), message, opts);
     if (r.reply !== undefined) return r.reply;
+    if (noReply) return `Told ${keyOf(target)} (message ${r.id}); no reply comes back.`;
     const later = `Its reply will come to you as a message (from ${keyOf(target)}, "Result of your delegation … (message ${r.id})"); carry on with other work or end your turn.`;
     return wait ? `${keyOf(target)} is still working on it (message ${r.id}). ${later}` : `Delegated to ${keyOf(target)} (message ${r.id}). ${later}`;
   },

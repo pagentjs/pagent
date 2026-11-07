@@ -201,9 +201,17 @@ describe("a conversation in the browser", () => {
     await page.locator(".pagent-console textarea").fill(`!tool TaskCreate {"subject":"Ship it"}\n!tool TaskUpdate {"taskId":"3","status":"completed"}\n!tool TaskUpdate {"taskId":"2","status":"deleted"}\n!say all set`);
     await page.keyboard.press("Enter");
     await page.locator(".pagent-turn.pagent-assistant", { hasText: "all set" }).waitFor();
+    // The turn over, and the conversation read again after it (its steps as the history has them).
+    await until(async () => !(await app.get("/_pagent/agent-status?node=/plan&agent=bot")).busy, "the agent to be idle");
+    await page.waitForTimeout(1000);
+    // Steps, shut, are rendered once opened (both turns').
+    for (const summary of await page.locator(".pagent-steps > summary").all()) await summary.click();
+    await until(async () => (await page.locator(".pagent-toolcard").count()) === 4, "the cards rendered");
     const briefs = await page.locator(".pagent-toolcard .pagent-toolcard-brief").allTextContents();
     assert.deepEqual(briefs, ["0 of 2 done", "new step: Ship it", "step 3: done", "step 2: removed"]);
     const cards = page.locator(".pagent-toolcard");
+    for (const i of [0, 1, 2, 3]) await cards.nth(i).locator("summary").click();
+    await cards.nth(0).locator(".pagent-steplist").waitFor();
     assert.equal(await cards.nth(0).locator(".pagent-steplist li").count(), 2);
     for (const i of [1, 2, 3]) assert.equal(await cards.nth(i).locator("pre, .pagent-steplist").count(), 0, "no JSON, no list");
     // Each step's state is words for a screen reader, not a label on an element without a role.

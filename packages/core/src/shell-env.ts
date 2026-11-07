@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { nodeBin } from "./program.ts";
 
 type Env = Record<string, string>;
 
@@ -82,7 +83,7 @@ function resolveFrom(shell: string, base: Env, timeoutMs: number): Promise<Env> 
   const script = `const m=process.env.PAGENT_ENV_MARK;delete process.env.PAGENT_ENV_MARK;delete process.env.PAGENT_ENV_NODE;process.stdout.write(m+JSON.stringify(process.env)+m)`;
   return new Promise((resolve, reject) => {
     const child = spawn(shell, ["-l", "-i", "-c", `"$PAGENT_ENV_NODE" -e '${script}'`], {
-      env: { ...base, PAGENT_ENV_MARK: mark, PAGENT_ENV_NODE: process.execPath },
+      env: { ...base, PAGENT_ENV_MARK: mark, PAGENT_ENV_NODE: nodeBin() },
       cwd: homedir(),
       stdio: ["ignore", "pipe", "pipe"],
       detached: true, // its own process group: a timeout takes whatever the rc files started with it

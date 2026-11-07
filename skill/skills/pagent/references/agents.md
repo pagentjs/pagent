@@ -97,11 +97,15 @@ machine needs `gbot` (npm `grok-bot-cli`) and the Grok Bot desktop app, signed i
   minutes after anything happened, when its console opens, and every `follow` when declared (`follow: "30m"`, at least
   a minute; its session then runs as long as the app). Each read may wake its cloud computer, so nothing reads it
   otherwise: without `follow`, a report that comes hours later waits for the next turn or a look at the agent.
-- It cannot run `pagent` and gets no system prompt or skills from the app: its instructions live in Grok Bot. No
-  terminal, no token use, no strangers.
-- Its computer sleeps half a minute after the bot last did something; pagent wakes it with the person's Cursor login
-  (Cursor.app signed in). A turn that cannot reach it says what to do (sign in to Cursor, wake it from the Grok Bot
-  app, relaunch the app, update gbot).
+- It cannot run `pagent` and gets no system prompt or skills from the app. Give it a **workspace**
+  (`workspace: "~/team/media/scout"`): a bot pagent makes is first told to read its README.md and keep its notes
+  there. Keep its schedules in the app's [triggers](triggers.md): then the bot is only a name. No terminal, no token
+  use, no strangers.
+- **Accounts.** Usage is weekly per Grok Bot account. With several given to pagent (`pagent grokbot login <name>`,
+  in the person's terminal), each turn goes to the first with usage left, the bot made there by name (declare `bot`
+  by name). Without them, it is the Grok Bot app's account.
+- A turn that cannot reach it says what to do (sign in to Cursor, relaunch the Grok Bot app, update gbot; no
+  usage left: when it comes back).
 
 ## Which agent: useAgent, useAsk
 
@@ -118,7 +122,8 @@ machine needs `gbot` (npm `grok-bot-cli`) and the Grok Bot desktop app, signed i
 - `pagent tell /ops#ops "…"` delegates: its result comes back to you later as a message, "Result of your delegation to
   /ops#ops (message <id>)", the id `tell` gave you. `--wait` waits for a quick reply; `--interject` puts it into the
   turn the other agent is in (it reads it between two steps) instead of after it; `--new` makes a new instance of a
-  dynamic page and tells its agent ([instances](instances.md)).
+  dynamic page and tells its agent ([instances](instances.md)); `--no-reply` is for a notice or a receipt: what it
+  says back goes to no one, so it does not wake you to read "done" (the other agent sees "(from …, no reply)").
 - `pagent tell .. "…"` is the nearest agent above your node (as `cd ..`): hand it something that belongs to its part of
   the app.
 - `pagent stop /ops#ops` stops its turn in progress (as Esc in its terminal); its waiting messages still go to it

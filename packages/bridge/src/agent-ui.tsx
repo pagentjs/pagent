@@ -4,7 +4,7 @@
 //   <AgentFab>      a status button in the corner that opens either
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type ReactNode } from "react";
 import type { FileUIPart, UIMessage } from "ai";
-import { draftKey, FormStatesOf, LOCK_ICON, Markdown, Part, toolLabel, Turns, useAgentChat, useDraft, type ChatTurn } from "./chat.tsx";
+import { draftKey, Earlier, FormStatesOf, LOCK_ICON, Markdown, Part, toolLabel, Turns, useAgentChat, useDraft, type ChatTurn } from "./chat.tsx";
 import { IMAGE_TYPES, imagePart, imagesIn } from "./attach.ts";
 import type { CardsShown } from "./cards.tsx";
 import { labelOf, sayIn, t, tn, useLanguage } from "./i18n.ts";
@@ -664,7 +664,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
 }) {
   useLanguage();
   const agent = useResolvedAgent(explicit);
-  const { messages, sendMessage, stop: detach, loaded } = useAgentChat(agent);
+  const { messages, sendMessage, stop: detach, loaded, earlier, loadEarlier } = useAgentChat(agent);
   const status = useAgentStatus(agent, { handle: true });
   const host = useHost();
   // While it works: a message is queued on the server, for every page of the agent to see (and withdraw) until it goes
@@ -778,6 +778,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
       </header>
       <div className="pagent-console-log" ref={logRef}>
         {messages.length === 0 && (loaded ? <div className="pagent-console-empty">{empty ?? t("console.empty")}</div> : <div className="pagent-muted">{t("loading")}</div>)}
+        <Earlier count={earlier} load={loadEarlier} />
         <FormStatesOf agent={agent} messages={messages}>
           <Turns messages={messages} me={agent} detailed chatter={chatter} cards={cards} footer={turnFooter} busy={status.busy} />
         </FormStatesOf>
@@ -801,7 +802,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
           key={key}
           keep={draftKey(agent)}
           // What it is doing shows at the end of the conversation; here only what sending does meanwhile.
-          placeholder={t(!status.busy ? "console.placeholder" : status.interject ? "console.queueOrNow" : "console.queue")}
+          placeholder={t(!status.busy ? "console.placeholder" : status.interject && !touch() ? "console.queueOrNow" : "console.queue")}
           commands={status.session.slashCommands}
           complete={complete}
           attach={attach}
@@ -812,6 +813,9 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
     </div>
   );
 }
+
+/** A touch screen, with no keyboard to say "⌘↵ to say it now" of. */
+const touch = () => typeof matchMedia === "function" && matchMedia("(hover: none)").matches;
 
 /**
  * What is off about the agent's terminal, above the composer: its turns run headless for now (its TUI did not come up:

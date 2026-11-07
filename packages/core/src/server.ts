@@ -10,7 +10,7 @@ import { basename, extname, join, normalize, sep } from "node:path";
 import { engine, hasShell } from "./engine.ts";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { WebSocketServer } from "ws";
-import { activeRun, agentOf, agentStatus, ask, askOrDecline, declOf, harnesses, harnessOfAgent, recordWaits, saveAttachments, trajectoryPage, trajectoryRecord, uploadFile, closeQuietAgents, refreshAgents, conflictOf, follow, history, interactiveCommand, lastWords, lookAt, restartTerminal, tuiStale, recoverAgents, redeliver, remoteAt, residency, sessionHandle, startRun, stopTurn, turnsQueued, unattended, unqueue, untilRun, usageOf, whenIdle, type AskInput, type Ctx, type Run } from "./agents.ts";
+import { activeRun, agentOf, agentStatus, ask, askOrDecline, declOf, harnesses, harnessOfAgent, recordWaits, saveAttachments, trajectoryPage, trajectoryRecord, uploadFile, closeQuietAgents, refreshAgents, conflictOf, follow, history, interactiveCommand, lastWords, lookAt, restartTerminal, tuiStale, recoverAgents, redeliver, remoteAt, residency, sessionHandle, startRun, stopTurn, turnsQueued, unattended, unqueue, toolCallOf, untilRun, usageOf, viewMessage, viewPart, whenIdle, type AskInput, type Ctx, type Run } from "./agents.ts";
 import { restoreQuestions, runCommand } from "./commands.ts";
 import { registerApp } from "./daemon-client.ts";
 import { forClient, runAction } from "./actions.ts";
@@ -30,9 +30,10 @@ import { readSettings, settingsError, SettingsBroken, watchSettings, writeSettin
 import { ensureFork } from "./fork.ts";
 import { dynamicPages } from "./dynamic.ts";
 import { clientInfo, Nodes } from "./nodes.ts";
-import { canonical, codeOf, hasCode, instancePathError, instancesOf, isNode, nodeDir, normPath, notMade, resolveRoute, settleRecord, type NodeFile } from "./tree.ts";
+import { canonical, codeOf, hasCode, instancePathError, instancesOf, isNode, listNodes, nodeDir, normPath, notMade, resolveRoute, settleRecord, type NodeFile } from "./tree.ts";
 import { madeOf, migrateRecords, shownPath } from "./made.ts";
 import { moveNode, removeInstance } from "./moves.ts";
+import { directory } from "./commands/common.ts";
 import { movedText } from "./commands/nodes.ts";
 import { cookieName, isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
 import { createKey, presentedKey, reaches, resolveKey, revokeKey, type KeyHolder } from "./keys.ts";
@@ -75,6 +76,15 @@ const TYPES: Record<string, string> ={ ".html": "text/html; charset=utf-8", ".js
 /** Only the app's own pages may show it in a frame: framed by another site's page, the app's buttons (Allow on a
  *  permission, an action's) could sit under that page's own, and the user's click would be the app's (clickjacking). */
 const FRAMING = { "content-security-policy": "frame-ancestors 'self'", "x-frame-options": "SAMEORIGIN" };
+
+/** The built shell's entry script ("/assets/index-<hash>.js"), as its index.html loads it: which build it serves now. */
+export function shellBuild(): string | null {
+  try {
+    return /\/assets\/index-[\w-]+\.js/.exec(readFileSync(join(engine.shell, "index.html"), "utf8"))?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * A file of the built shell, or its index.html for any route (the shell routes on the client). That page carries the
@@ -299,15 +309,15 @@ export function startServer(opts: ServerOptions) {
       }
       switch (`${req.method} ${url.pathname}`) {
         case "GET /_pagent/events":
-          return sse(req, res, q("client") || null);
+          return sse(req, res, q("client") || null, shellBuild());
 
         // The layouts and the page a URL shows; the page's params (the shell's useParams); whether it fills the window
-        // (metadata.fill of the page or a layout above it, the nearest that says).
+        // (metadata.fill of the page, else of the nearest layout above it that says; a page above it does not say for it).
         case "GET /_pagent/route": {
           const chain = resolveRoute(root, q("path") || "/");
           if (!chain) return json(res, 404, { error: "not found" });
           const page = chain[chain.length - 1].path;
-          const fills = await Promise.all(chain.map((e) => nodes.declarations(e.path).then((d) => d.manifest.fill, () => undefined)));
+          const fills = await Promise.all(chain.map((e) => nodes.declarations(e.path).then((d) => d.fill[e.file], () => undefined)));
           const fill = fills.reduce<boolean | undefined>((was, f) => f ?? was, undefined) ?? false;
           return json(res, 200, { chain, params: codeOf(root, page)?.params ?? {}, fill });
         }
@@ -435,10 +445,23 @@ export function startServer(opts: ServerOptions) {
 
         // after=<message id>: only from that message on (a view that has the rest), when it is still there. While the
         // agent is in a turn, up to that turn's message: a view then attaches to the turn, which replays its reply.
+        // last=<n>: a view's part (viewPart): from after, else the last n turns, before=<message id> (earlier ones, as
+        // they are: no turn to attach to there) or the end; earlier: how many messages come before it; long tool input
+        // and output cut to a few lines (viewMessage; a card, opened, fetches its call whole: tool-call).
         case "GET /_pagent/history": {
           const ref = { node: normPath(q("node")), agent: q("agent") };
-          const messages = await history(ctx, ref, q("after") || undefined);
-          return json(res, 200, { messages: untilRun(messages, activeRun(ref)) });
+          const turns = Number(q("last"));
+          if (!turns) return json(res, 200, { messages: untilRun(await history(ctx, ref, q("after") || undefined), activeRun(ref)) });
+          const part = viewPart(await history(ctx, ref), { after: q("after") || undefined, before: q("before") || undefined, turns });
+          const messages = part.messages.map(viewMessage);
+          const body = { messages: q("before") ? messages : untilRun(messages, activeRun(ref)), earlier: part.earlier };
+          return sendEncoded(req, res, { "content-type": "application/json" }, Buffer.from(JSON.stringify(body))); // a phone's, over the network
+        }
+
+        // One tool call of the conversation as it is (the view's history has a few lines of each): id=<its tool call id>.
+        case "GET /_pagent/tool-call": {
+          const call = toolCallOf(await history(ctx, { node: normPath(q("node")), agent: q("agent") }), q("id"));
+          return call ? json(res, 200, call) : json(res, 404, { error: `no tool call ${q("id")}` });
         }
 
         // The agent's session as a timeline (agents/trajectory.ts): its records, long ones cut, and `at`; after=<at>: only
@@ -518,11 +541,24 @@ export function startServer(opts: ServerOptions) {
         // tell() from the app's server code ("pagent/server"): it names the call it runs in (calls.ts), which says whom
         // it runs for. A process the engine did not start has none.
         case "POST /_pagent/tell": {
-          const b = (await readBody(req)) as { call?: string; to?: string; message?: string; from?: string; stranger?: boolean; interject?: boolean; wait?: boolean | number; new?: boolean };
+          const b = (await readBody(req)) as { call?: string; to?: string; message?: string; from?: string; stranger?: boolean; interject?: boolean; wait?: boolean | number; new?: boolean; noReply?: boolean };
           const call = callOf(b.call);
           if (!call) return json(res, 403, { error: "tell() works in the app's server code (an action, a route), as the engine runs it" });
           try {
-            return json(res, 200, await tell(ctx, call, String(b.to ?? ""), String(b.message ?? ""), { from: b.from, stranger: !!b.stranger, interject: !!b.interject, wait: b.wait, new: !!b.new }));
+            return json(res, 200, await tell(ctx, call, String(b.to ?? ""), String(b.message ?? ""), { from: b.from, stranger: !!b.stranger, interject: !!b.interject, wait: b.wait, new: !!b.new, noReply: !!b.noReply }));
+          } catch (e) {
+            return json(res, 422, { error: (e as Error).message });
+          }
+        }
+
+        // `pagent tell --as <name>` from a session on this computer outside the app (cli.ts): the person's own plane, as
+        // stop and move are. It waits for the reply (wait), or asks for none: it has no address a later one could go to.
+        case "POST /_pagent/local-tell": {
+          const b = (await readBody(req)) as { as?: string; to?: string; message?: string; wait?: boolean | number; interject?: boolean };
+          const name = String(b.as ?? "");
+          if (!/^[\w.-]{1,40}$/.test(name)) return json(res, 400, { error: `--as names the session telling, a short word ([A-Za-z0-9_.-], up to 40): "${name}"` });
+          try {
+            return json(res, 200, await tell(ctx, { caller: { kind: "local", name } }, String(b.to ?? ""), String(b.message ?? ""), { interject: !!b.interject, ...(b.wait ? { wait: b.wait } : { noReply: true }) }));
           } catch (e) {
             return json(res, 422, { error: (e as Error).message });
           }
@@ -674,6 +710,37 @@ export function startServer(opts: ServerOptions) {
 
         // The instances of a dynamic page that are made (of: its code's path, /studio/[ws]/[id]): their address as the
         // engine has it (path) and as people read it (url), their params, who made them and when (made.ts).
+        // What every agent of the app is doing now, for server code (agentStatus() of "pagent/server"): the same as
+        // agent-status, in short.
+        case "GET /_pagent/agents": {
+          const list = await directory(ctx);
+          return json(res, 200, {
+            agents: list.map((a) => {
+              const s = agentStatus(a);
+              return { address: a.address, busy: s.busy, activity: s.activity, since: s.since, quietSince: s.quietSince, stuck: s.stuck, queued: s.queued.length, ...(s.offline ? { offline: s.offline } : {}) };
+            }),
+          });
+        }
+
+        // What the person's `pagent agents` and `pagent tree` print (cli.ts), for a session outside the app: its pages
+        // (route: a URL of its own; title, its metadata's) and the agents on each, as an agent's `pagent agents` has them.
+        case "GET /_pagent/directory": {
+          const agents = await directory(ctx);
+          const rows = [];
+          for (const path of listNodes(root)) {
+            const d = await nodes.declarations(path).catch(() => null);
+            if (!d) continue;
+            rows.push({
+              path,
+              url: shownPath(root, path),
+              ...(d.manifest.title ? { title: d.manifest.title } : {}),
+              route: !path.split("/").some((x) => x.startsWith(".")) && hasCode(root, path, "page"),
+              agents: agents.filter((a) => a.node === path).map(({ node: _, folder: __, ...a }) => a),
+            });
+          }
+          return json(res, 200, { root, nodes: rows });
+        }
+
         case "GET /_pagent/instances":
           return json(res, 200, {
             instances: instancesOf(root, q("of")).map((path) => {

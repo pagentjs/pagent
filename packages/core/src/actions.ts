@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { nodeBin } from "./program.ts";
 import { pathToFileURL } from "node:url";
 import { build, type Plugin } from "esbuild";
 import { via, type Caller } from "./caller.ts";
@@ -241,7 +242,7 @@ export async function runServerCode(root: string, source: string, entry: string,
   }
   return new Promise((resolve) => {
     const dotenv = join(root, ".env");
-    const child = spawn(process.execPath, [...(existsSync(dotenv) ? [`--env-file=${dotenv}`] : []), script], {
+    const child = spawn(nodeBin(), [...(existsSync(dotenv) ? [`--env-file=${dotenv}`] : []), script], {
       cwd,
       env: {
         ...process.env,
@@ -270,6 +271,7 @@ export async function runServerCode(root: string, source: string, entry: string,
       }
       resolve({ r, logs: (stdout + stderr).trim() });
     });
+    child.stdin!.on("error", () => {}); // it died before reading it (EPIPE): "close" says so
     child.stdin!.end(JSON.stringify(stdin));
   });
 }

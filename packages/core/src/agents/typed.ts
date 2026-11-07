@@ -3,6 +3,7 @@
 // otherwise it runs headless, a process of its own in the daemon (so it outlives this server, which takes it up again
 // when it restarts). One process per session: another that has the session open stops the turn (conflict).
 import { attachProc, listProcs, procOp, spawnProc, type ProcEvent, type ProcInfo } from "../daemon-client.ts";
+import { nodeBin } from "../program.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { harnessEnv } from "../shell-env.ts";
 import { isBusy, pressKeys, stopTerminal, terminalOf, whenClosed } from "../terminal.ts";
@@ -77,7 +78,7 @@ async function turn({ ctx, run, push, input, decl, message }: Turn): Promise<str
     spawnProc({
       id: procId,
       kind: "pipe",
-      command: process.execPath,
+      command: nodeBin(),
       args: [script],
       cwd: base.cwd,
       env,

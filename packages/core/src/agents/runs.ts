@@ -166,7 +166,9 @@ function runEnded(ctx: Ctx, run: Run, push: Push, text: string, how: RunFor) {
   }
   broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "run-end", runId: run.id } });
   turned("end", run, text);
-  if (!run.taken) run.stopped ? run.letter?.taken() : run.letter?.untaken(); // stopped before it began: not tried again
+  // Stopped before it began: not tried again. Not taken: why, as its runner said (the run's last error).
+  const why = (run.chunks as { type: string; errorText?: string }[]).findLast((c) => c.type === "error")?.errorText;
+  if (!run.taken) run.stopped ? run.letter?.taken() : run.letter?.untaken(why);
   // An unattended run's result carries on what the trigger started: nobody is there for that run either; and it comes
   // from the triggers the run came from.
   const alone = run.unattended ? { unattended: true } : {};
@@ -361,10 +363,10 @@ export async function startRun(ctx: Ctx, input: AskInput, opts: StartOptions = {
     taken: () => drop(ctx.root, letter.id),
     // Not delivered while this server ran (an error on the way): kept for the next server to try, unless a person
     // wrote it in a conversation, who saw it fail there.
-    untaken: () => {
+    untaken: (why) => {
       if (input.caller.kind === "user") return drop(ctx.root, letter.id);
       keep(ctx.root, { ...letter, tries: (letter.tries ?? 0) + 1 });
-      console.warn(`${keyOf(ref)}: a message did not reach the agent; it is tried again when the server next starts`);
+      console.warn(`${keyOf(ref)}: a message did not reach the agent${why ? ` (${why.split("\n")[0].slice(0, 300)})` : ""}; it is tried again when the server next starts`);
     },
   };
   // An interjection goes into the turn in progress when the agent's harness takes it there now; else it waits its turn.
