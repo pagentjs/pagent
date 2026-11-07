@@ -61,7 +61,7 @@ type Input = {
   skills?: string[]; // declared: the agent's skills (SKILL.md folders) instead of the user's (ownSkills)
   mcps?: Record<string, unknown>; // declared: the agent's MCP servers instead of the user's (mcpArgs)
   systemPrompt?: string;
-  options?: { model?: string; tools?: string[]; permissionMode?: string; allow?: string[]; renew?: Renew };
+  options?: { model?: string; effort?: string; tools?: string[]; permissionMode?: string; allow?: string[]; renew?: Renew };
   maxOutputTokens?: number; // stranger: the cap on its answer
   appRoot?: string; // the app's folder: what its .claude/settings forbid holds for every agent of the app (appRules)
 };
@@ -285,6 +285,9 @@ function statusLine(input: Input, theirs: any) {
  */
 const permissionMode = (input: Input) => ["--permission-mode", input.options?.permissionMode ?? "acceptEdits"];
 
+/** The agent's reasoning effort (its declaration's `effort`: low, medium, high, xhigh, max), as Claude Code's --effort. */
+const effortArgs = (opts: { effort?: unknown }) => (typeof opts.effort === "string" && opts.effort ? ["--effort", opts.effort] : []);
+
 // ---------------------------------------------------------------- the agent's own skills and MCP servers
 
 /**
@@ -363,6 +366,7 @@ async function askOp(input: Input) {
     ...[...(input.pluginDirs ?? []), ...(own ? [own.pluginDir] : [])].flatMap((d) => ["--plugin-dir", d]),
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
     ...(model ? ["--model", model] : []),
+    ...effortArgs(opts),
     ...settingsArgs(input, own),
     ...mcpArgs(input),
     ...(pinned(input) ? sessionArgs(input, session) : ["--continue"]),
@@ -748,6 +752,7 @@ function interactiveOp(input: Input) {
     ...[...(input.pluginDirs ?? []), ...(own ? [own.pluginDir] : [])].flatMap((d) => ["--plugin-dir", d]),
     ...(input.systemPrompt ? ["--append-system-prompt", input.systemPrompt] : []),
     ...(model ? ["--model", model] : []),
+    ...effortArgs(input.options ?? {}),
     ...settingsArgs(input, own, true),
     ...mcpArgs(input),
     ...(fork ? ["--resume", session!, "--fork-session", "--session-id", fork] : sessionArgs(input, session)),

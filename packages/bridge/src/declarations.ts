@@ -21,7 +21,7 @@ export type AgentSpec = {
   /** Run the harness in this folder (e.g. where an adopted session lives). Defaults to the node's folder. */
   cwd?: string;
   model?: string;
-  effort?: string; // reasoning effort (codex)
+  effort?: string; // reasoning effort (codex; Claude Code: --effort low | medium | high | xhigh | max)
   permissionMode?: string;
   /**
    * What its harness lets it do without asking: the harness's own permission rules, as they are (Claude Code:
